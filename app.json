@@ -1,0 +1,101 @@
+{
+  "id": "com.beckerantriebe.centronic",
+  "version": "0.1.0",
+  "compatibility": ">=5.0.0",
+  "sdk": 3,
+  "platforms": ["local"],
+  "name": { "en": "Becker Centronic" },
+  "description": {
+    "en": "Control Becker Centronic roller shutters natively via Homey Pro's 868 MHz radio"
+  },
+  "category": ["appliances"],
+  "permissions": ["homey:wireless:868"],
+  "brandColor": "#e2001a",
+  "author": { "name": "Kiro" },
+  "images": {
+    "small": "/assets/images/small.png",
+    "large": "/assets/images/large.png"
+  },
+  "signals": {
+    "868": {
+      "becker": {
+        "$comment": "Becker Centronic: 868.283 MHz 2-FSK, Manchester-coded, half-bit ~417us, 65-bit on-air frame (per FHEM/SIGNALduino captures). Timings below NEED calibration against a real remote capture before first tx.",
+        "sof": [],
+        "eof": [417],
+        "words": [
+          [417, 417],
+          [834, 834]
+        ],
+        "interval": 10000,
+        "repetitions": 3,
+        "sensitivity": 0.5,
+        "minimalLength": 60,
+        "maximalLength": 180
+      }
+    }
+  },
+  "drivers": [
+    {
+      "id": "shutter",
+      "name": { "en": "Centronic Roller Shutter" },
+      "class": "windowcoverings",
+      "capabilities": ["windowcoverings_state"],
+      "platforms": ["local"],
+      "connectivity": ["rf868"],
+      "images": {
+        "small": "/drivers/shutter/assets/small.png",
+        "large": "/drivers/shutter/assets/large.png"
+      },
+      "pair": [
+        {
+          "id": "list_devices",
+          "template": "list_devices",
+          "navigation": { "next": "add_devices" }
+        },
+        {
+          "id": "add_devices",
+          "template": "add_devices"
+        }
+      ],
+      "settings": [
+        {
+          "id": "channel",
+          "type": "number",
+          "label": { "en": "Channel" },
+          "value": 1,
+          "min": 1,
+          "max": 7,
+          "hint": { "en": "Becker channel this shutter listens on (1-7)." }
+        }
+      ]
+    }
+  ],
+  "flow": {
+    "actions": [
+      {
+        "id": "train",
+        "title": { "en": "Pair (train) with shutter" },
+        "hint": { "en": "Put the shutter motor in pairing mode first (master remote programming button), then run this card within the pairing window." },
+        "args": [
+          {
+            "type": "device",
+            "name": "device",
+            "filter": "driver_id=shutter"
+          }
+        ]
+      },
+      {
+        "id": "resync_counter",
+        "title": { "en": "Re-sync rolling counter" },
+        "hint": { "en": "Sends HALT three times to force the receiver to accept this app's current counter value." },
+        "args": [
+          {
+            "type": "device",
+            "name": "device",
+            "filter": "driver_id=shutter"
+          }
+        ]
+      }
+    ]
+  }
+}
