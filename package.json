@@ -1,0 +1,10 @@
+{
+  "name": "com.beckerantriebe.centronic",
+  "version": "0.1.0",
+  "description": "Becker Centronic roller shutters on Homey Pro's native 868 MHz radio",
+  "main": "app.js",
+  "scripts": {
+    "test": "node test/protocol.test.js"
+  },
+  "license": "MIT"
+}
