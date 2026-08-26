@@ -79,6 +79,39 @@ const P = require('../lib/BeckerProtocol');
   }
 }
 
+// --- manchester encoding ---
+{
+  // bit 0 -> half-bits (1,0): one word [short mark, short space] -> index 0
+  assert.deepStrictEqual(P.manchesterEncode([0]), [0]);
+}
+{
+  // bit 1 -> half-bits (0,1): prepend idle mark -> 1,0,1 ->
+  // pulses (mark 1u)(space 1u)(mark 1u) -> words: [0, then trailing mark 0]
+  assert.deepStrictEqual(P.manchesterEncode([1]), [0, 0]);
+}
+{
+  // bits [0,0] -> 1,0,1,0 -> (m1)(s1)(m1)(s1) -> [0,0]
+  assert.deepStrictEqual(P.manchesterEncode([0, 0]), [0, 0]);
+}
+{
+  // bits [0,1] -> 1,0,0,1 -> (m1)(s2)(m1) -> word0: (0<<1|1)=1, word1: trailing mark -> 0
+  assert.deepStrictEqual(P.manchesterEncode([0, 1]), [1, 0]);
+}
+{
+  // bits [1,0] -> prepend -> 1,0,1,1,0 -> (m1)(s1)(m2)(s1) -> [0, 2]
+  assert.deepStrictEqual(P.manchesterEncode([1, 0]), [0, 2]);
+}
+{
+  // total half-bit units are conserved (+1 possible idle mark, +1 closing space)
+  const bits = P.frameToBits('0000000002010B00000000001737C02101020020C1'.slice(0, 42));
+  const words = P.manchesterEncode(bits);
+  let units = 0;
+  for (const w of words) units += ((w >> 1) & 1) + 1 + (w & 1) + 1;
+  assert.ok(units === bits.length * 2 || units === bits.length * 2 + 1 || units === bits.length * 2 + 2);
+  // all indices valid for the 4-word table
+  assert.ok(words.every(w => w >= 0 && w <= 3));
+}
+
 // --- validation ---
 assert.throws(() => P.generateCode('123', 0, 1, 0x20)); // bad unit
 assert.throws(() => P.generateCode('1737c', 0, 9, 0x20)); // bad channel
