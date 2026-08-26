@@ -19,11 +19,13 @@
   "signals": {
     "868": {
       "becker": {
-        "$comment": "Becker Centronic: 868.283 MHz 2-FSK, Manchester-coded, half-bit ~417us, 65-bit on-air frame (per FHEM/SIGNALduino captures). Timings below NEED calibration against a real remote capture before first tx.",
+        "$comment": "Becker Centronic: 868.283 MHz 2-FSK, Manchester-coded, half-bit ~417us (FHEM/SIGNALduino capture: C=417, L=65). 4-word table covers all Manchester mark/space pairs: 0=[s,s] 1=[s,l] 2=[l,s] 3=[l,l]. Default timings pending calibration against a real capture.",
         "sof": [],
         "eof": [417],
         "words": [
           [417, 417],
+          [417, 834],
+          [834, 417],
           [834, 834]
         ],
         "interval": 10000,

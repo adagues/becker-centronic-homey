@@ -55,9 +55,9 @@ class BeckerCentronicApp extends Homey.App {
     this._txQueue = this._txQueue.then(async () => {
       const { frames, nextIncrement } = builderFn(this.unitId, this.getIncrement());
       for (const frame of frames) {
-        const bits = P.frameToBits(frame);
-        this.log(`TX ${frame}`);
-        await this._signal.tx(bits);
+        const words = P.manchesterEncode(P.frameToBits(frame));
+        this.log(`TX ${frame} (${words.length} words)`);
+        await this._signal.tx(words);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       this.setIncrement(nextIncrement);
