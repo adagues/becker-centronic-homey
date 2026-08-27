@@ -86,3 +86,27 @@ as soon as more captures are appended to `corpus.json`.
    whitening/substitution scheme in the USB stick.
 4. **Cryptography cannot be reproduced:** use the official Becker USB stick or
    ESP32+CC1101 bridge as the RF endpoint; Homey app remains the UI/orchestrator.
+
+## Blind KeeLoq implementation
+
+`keeloq.py` now provides:
+
+- the standard 528-round KeeLoq encrypt/decrypt primitive;
+- a conventional candidate plaintext layout (`function | discrimination |
+  counter`);
+- eight common 66-bit field/bit-order variants (`hop32 + fixed34` and the
+  reverse);
+- candidate normal-learning key derivations for testing once a manufacturer
+  key candidate is available.
+
+Run its tests with:
+
+```bash
+python3 -m unittest discover -s research -p 'test_*.py'
+```
+
+This is intentionally a parameterized research implementation. It does not
+contain a Becker device/manufacturer key, and therefore cannot yet produce a
+rolling code that a Becker receiver will accept. Captures and/or readout of the
+owner's PIC16F636 are still required to determine Becker's exact field layout,
+key and key-derivation convention.
