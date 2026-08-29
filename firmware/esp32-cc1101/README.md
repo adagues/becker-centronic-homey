@@ -76,9 +76,11 @@ The firmware prints a radio heartbeat every two seconds:
 DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00
 ```
 
-`marc=0x0D` means that the CC1101 is in RX. Pressing a remote button should make
-`edges` and `delta` increase even when the pulse train does not yet match the
-expected Becker timing.
+`marc=0x0D` means that the CC1101 is in RX. The firmware configures MCSM1 to
+remain in RX and reissues `SRX` automatically if the radio ever returns to
+`marc=0x01` (IDLE). Pressing a remote button should make `edges` and `delta`
+increase even when the pulse train does not yet match the expected Becker
+timing.
 
 Every burst containing at least two pulse durations is printed without a timing
 filter:
