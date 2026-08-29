@@ -73,7 +73,7 @@ so an absent module can no longer create fake `ff` frames.
 The firmware prints a radio heartbeat every two seconds:
 
 ```text
-DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00
+DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00 mc=0 reject=0 drop=0
 ```
 
 `marc=0x0D` means that the CC1101 is in RX. The firmware configures MCSM1 to
@@ -84,24 +84,39 @@ that strobe in RX/RX_RST, then waits for `marc=0x0D` after `SRX`. Pressing a rem
 increase even when the pulse train does not yet match the expected Becker
 timing.
 
-Every burst containing at least two pulse durations is printed without a timing
-filter:
+The ISR stream is consumed continuously in 64-pulse chunks; it no longer waits
+for a silent RF gap and therefore cannot grow into a merged 512-pulse burst.
+A sliding Manchester detector:
+
+1. keeps contiguous pulse runs near 417 us (one half-bit) or 834 us (two
+   half-bits);
+2. expands each run to half-bit levels;
+3. tests both possible Manchester phases;
+4. extracts the longest contiguous sequence of valid opposite-level pairs;
+5. reports only sequences containing at least 40 coherent bits.
+
+A detected frame is printed as:
 
 ```text
-BURST n=96 total_us=54180 match=98% c=417 halfbits=130 bits_est=65.0 D=-403,432,-826,846,...
+MC bits=65 c=417 pulses=96 halfbits=130 phase=0 hex=FFE9BC20B299FC858 inv=001643DF4D66037A0 D=-403,432,-826,846,...
 ```
 
-- `n`: number of captured level durations
-- `total_us`: observed burst duration
-- `match`: percentage of durations matching the expected 417/834 us timing
-- `c`: estimated Manchester half-clock in microseconds
-- `halfbits`: estimated count of Manchester half-bits
-- `bits_est`: direct frame-length estimate (`halfbits / 2`)
-- negative duration: low level; positive duration: high level
+- `bits`: exact length of the longest coherent Manchester sequence
+- `c`: estimated half-bit clock in microseconds
+- `pulses` / `halfbits`: timing-run sizes before Manchester extraction
+- `phase`: selected half-bit pairing offset (0 or 1)
+- `hex`: decoded polarity candidate, padded on the right to a full nibble
+- `inv`: inverse-polarity candidate
+- `D`: signed raw durations for independent checking
 
-`BURST_OVERFLOW` means more than 512 durations were seen without a frame gap.
-The complete timing sequence is kept so the framing assumptions can be checked
-instead of silently rejecting an unexpected but potentially valid signal.
+The periodic `DIAG` line includes `mc`, `reject`, and `drop`: detected frames,
+timing-compatible runs rejected by Manchester validation, and ISR chunk
+overflows. Continuous asynchronous RF noise should raise `edges` and possibly
+`reject`, but must not produce `MC` frames unless it contains a coherent run.
+
+The detector itself is hardware-independent and covered by a host test with
+synthetic 65-bit and 66-bit frames, polarity inversion, timing jitter, noise
+boundaries, and timing-compatible non-Manchester noise.
 
 If Wi-Fi credentials are configured, the ESP32 also exposes:
 

@@ -24,6 +24,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
+#include "manchester_detector.h"
+
 // ---------- user configuration ----------
 static const char* WIFI_SSID = "CHANGE_ME";
 static const char* WIFI_PASS = "CHANGE_ME";
@@ -157,6 +159,7 @@ static bool cc1101Init() {
 
 // ---------- asynchronous pulse capture ----------
 static const size_t MAX_PULSES = 512;
+static const size_t STREAM_CHUNK_PULSES = 64;
 static const uint32_t FRAME_GAP_US = 2500;
 static const uint32_t MIN_GLITCH_US = 80;
 
@@ -168,6 +171,11 @@ static volatile bool pulseOverflow = false;
 static volatile uint32_t totalEdgeCount = 0;
 static portMUX_TYPE pulseMux = portMUX_INITIALIZER_UNLOCKED;
 
+static becker::ManchesterDetector manchesterDetector;
+static uint32_t manchesterDetected = 0;
+static uint32_t manchesterRejected = 0;
+static uint32_t captureOverflows = 0;
+
 static void IRAM_ATTR onGdo2Edge() {
   const uint32_t now = micros();
   const uint32_t duration = now - lastEdgeUs;
@@ -176,14 +184,10 @@ static void IRAM_ATTR onGdo2Edge() {
 
   portENTER_CRITICAL_ISR(&pulseMux);
   totalEdgeCount++;
-  if (duration > FRAME_GAP_US) {
-    // The loop normally consumes the preceding frame during the idle gap.
-    // If it did not, start clean rather than merging two transmissions.
-    pulseCount = 0;
-    pulseOverflow = false;
-  } else if (duration >= MIN_GLITCH_US) {
+  if (duration >= MIN_GLITCH_US) {
     if (pulseCount < MAX_PULSES) {
-      pulseDurations[pulseCount] = static_cast<uint16_t>(duration);
+      pulseDurations[pulseCount] =
+          static_cast<uint16_t>(duration > UINT16_MAX ? UINT16_MAX : duration);
       pulseLevels[pulseCount] = previousLevel;
       pulseCount++;
     } else {
@@ -193,13 +197,18 @@ static void IRAM_ATTR onGdo2Edge() {
   portEXIT_CRITICAL_ISR(&pulseMux);
 }
 
-static bool takePulseFrame(uint16_t* durations, uint8_t* levels,
+static bool takePulseChunk(uint16_t* durations, uint8_t* levels,
                            size_t& count, bool& overflow) {
   const uint32_t now = micros();
-  if (pulseCount == 0 || now - lastEdgeUs < FRAME_GAP_US) return false;
+  const size_t observedCount = pulseCount;
+  const bool idleGap = observedCount > 0 && now - lastEdgeUs >= FRAME_GAP_US;
+  if (observedCount < STREAM_CHUNK_PULSES && !idleGap && !pulseOverflow) {
+    return false;
+  }
 
   portENTER_CRITICAL(&pulseMux);
-  if (pulseCount == 0 || now - lastEdgeUs < FRAME_GAP_US) {
+  const bool lockedIdleGap = pulseCount > 0 && now - lastEdgeUs >= FRAME_GAP_US;
+  if (pulseCount < STREAM_CHUNK_PULSES && !lockedIdleGap && !pulseOverflow) {
     portEXIT_CRITICAL(&pulseMux);
     return false;
   }
@@ -231,53 +240,74 @@ static void storeFrame(const String& frame) {
   Serial.println(frame);
 }
 
-static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
-                              size_t count, bool overflow) {
-  if (count < 2) return;
-
-  uint32_t totalDuration = 0;
-  size_t timingMatches = 0;
-  uint32_t clockSum = 0;
-  size_t clockSamples = 0;
-  for (size_t i = 0; i < count; i++) {
-    const uint16_t duration = durations[i];
-    totalDuration += duration;
-    if (duration >= 250 && duration <= 600) {
-      timingMatches++;
-      clockSum += duration;
-      clockSamples++;
-    } else if (duration >= 650 && duration <= 1100) {
-      timingMatches++;
-      clockSum += duration / 2;
-      clockSamples++;
+static String bitsToHex(const becker::ManchesterResult& result, bool invert) {
+  static const char HEX_DIGITS[] = "0123456789ABCDEF";
+  String output;
+  output.reserve((result.bitCount + 3) / 4);
+  for (size_t firstBit = 0; firstBit < result.bitCount; firstBit += 4) {
+    uint8_t nibble = 0;
+    for (size_t offset = 0; offset < 4; offset++) {
+      nibble <<= 1;
+      const size_t bitIndex = firstBit + offset;
+      if (bitIndex < result.bitCount) {
+        nibble |= result.bits[bitIndex] ^ (invert ? 1 : 0);
+      }
     }
+    output += HEX_DIGITS[nibble];
+  }
+  return output;
+}
+
+static void handleManchesterEvent(becker::ManchesterEvent event,
+                                  const becker::ManchesterResult& result) {
+  if (event == becker::ManchesterEvent::None) return;
+  if (event == becker::ManchesterEvent::Rejected) {
+    manchesterRejected++;
+    return;
   }
 
-  const uint32_t estimatedClock = clockSamples == 0 ? 0 : clockSum / clockSamples;
-  uint32_t estimatedHalfBits = 0;
-  if (estimatedClock != 0) {
-    for (size_t i = 0; i < count; i++) {
-      const uint32_t units = (durations[i] + estimatedClock / 2) / estimatedClock;
-      if (units >= 1 && units <= 4) estimatedHalfBits += units;
-    }
-  }
-
-  const uint32_t matchPercent = count == 0 ? 0 : timingMatches * 100 / count;
-  String frame = overflow ? "BURST_OVERFLOW" : "BURST";
-  frame += " n=" + String(count);
-  frame += " total_us=" + String(totalDuration);
-  frame += " match=" + String(matchPercent) + "%";
-  frame += " c=" + String(estimatedClock);
-  frame += " halfbits=" + String(estimatedHalfBits);
-  frame += " bits_est=" + String(estimatedHalfBits / 2.0f, 1);
+  manchesterDetected++;
+  String frame = "MC bits=" + String(result.bitCount);
+  frame += " c=" + String(result.clockUs);
+  frame += " pulses=" + String(result.pulseCount);
+  frame += " halfbits=" + String(result.halfBitCount);
+  frame += " phase=" + String(result.phase);
+  frame += " hex=" + bitsToHex(result, false);
+  frame += " inv=" + bitsToHex(result, true);
   frame += " D=";
-  frame.reserve(frame.length() + count * 6);
-  for (size_t i = 0; i < count; i++) {
+  frame.reserve(frame.length() + result.pulseCount * 6);
+  for (size_t i = 0; i < result.pulseCount; i++) {
     if (i != 0) frame += ',';
-    if (levels[i] == LOW) frame += '-';
-    frame += String(durations[i]);
+    if (result.levels[i] == LOW) frame += '-';
+    frame += String(result.durations[i]);
   }
   storeFrame(frame);
+}
+
+static void pollPulseCapture() {
+  static uint16_t durations[MAX_PULSES];
+  static uint8_t levels[MAX_PULSES];
+  becker::ManchesterResult result;
+  size_t count = 0;
+  bool overflow = false;
+
+  while (takePulseChunk(durations, levels, count, overflow)) {
+    if (overflow) {
+      captureOverflows++;
+      manchesterDetector.reset();
+    }
+    for (size_t i = 0; i < count; i++) {
+      const becker::ManchesterEvent event =
+          manchesterDetector.push(durations[i], levels[i], result);
+      handleManchesterEvent(event, result);
+    }
+    count = 0;
+    overflow = false;
+  }
+
+  if (micros() - lastEdgeUs >= FRAME_GAP_US) {
+    handleManchesterEvent(manchesterDetector.flush(result), result);
+  }
 }
 
 static bool waitForMarcState(uint8_t expectedState, uint32_t timeoutUs = 20000) {
@@ -305,6 +335,7 @@ static bool recoverReceiveMode() {
   pulseOverflow = false;
   lastEdgeUs = micros();
   portEXIT_CRITICAL(&pulseMux);
+  manchesterDetector.reset();
   return true;
 }
 
@@ -371,21 +402,14 @@ static void printRadioDiagnostic() {
   }
 
   const int rssiDbm = static_cast<int8_t>(rawRssi) / 2 - 74;
-  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X\n",
+  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X mc=%lu reject=%lu drop=%lu\n",
                 static_cast<unsigned long>(edges),
                 static_cast<unsigned long>(edges - previousEdgeCount),
-                digitalRead(PIN_GDO2), marcState & 0x1F, rssiDbm, packetStatus);
+                digitalRead(PIN_GDO2), marcState & 0x1F, rssiDbm, packetStatus,
+                static_cast<unsigned long>(manchesterDetected),
+                static_cast<unsigned long>(manchesterRejected),
+                static_cast<unsigned long>(captureOverflows));
   previousEdgeCount = edges;
-}
-
-static void pollPulseCapture() {
-  static uint16_t durations[MAX_PULSES];
-  static uint8_t levels[MAX_PULSES];
-  size_t count = 0;
-  bool overflow = false;
-  if (takePulseFrame(durations, levels, count, overflow)) {
-    processPulseFrame(durations, levels, count, overflow);
-  }
 }
 
 // ---------- optional Wi-Fi / HTTP ----------
@@ -422,7 +446,7 @@ static void startWifi() {
     String status = "Becker CC1101 raw capture\n";
     status += "CC1101 PARTNUM=0x" + String(cc1101Partnum, HEX);
     status += " VERSION=0x" + String(cc1101Version, HEX) + "\n";
-    status += "GET /frames - signed GDO2 pulse durations\n";
+    status += "GET /frames - detected Manchester frames with raw timings\n";
     status += "POST /clear - clear stored captures\n";
     server.send(200, "text/plain", status);
   });
