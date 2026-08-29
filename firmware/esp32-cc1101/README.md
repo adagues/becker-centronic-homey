@@ -1,50 +1,105 @@
-# ESP32 + CC1101 Becker bridge
+# ESP32 + CC1101 Becker raw capture
 
-Capture and transmit Becker Centronic frames (868.283 MHz, 2-FSK). Used to
-calibrate the Homey app's signal definition — and as the permanent Wi-Fi
-bridge if Homey's own radio turns out unable to transmit FSK.
+Capture the demodulated Becker Centronic signal at 868.283 MHz (2-FSK) with
+an ESP32 and an 868 MHz CC1101 module.
 
-## ⚠️ Buy the right module
+The Becker/SIGNALduino register set uses the CC1101 **asynchronous serial
+mode**. Receive data is exposed on **GDO2** and is not available through the RX
+FIFO. This firmware records GDO2 edge timings and prints SIGNALduino-style
+signed pulse durations for later Manchester decoding.
 
-CC1101 boards are **band-specific**: the antenna matching network is tuned at
-the factory. Order a module explicitly sold as **868 MHz** — the common
-433 MHz boards work poorly to not at all at 868. Any ESP32 dev board works.
+## Hardware
 
-## Wiring
+- ESP32 DevKit / `esp32dev`
+- CC1101 module tuned for **868 MHz** (not the common 433 MHz version)
+- 868 MHz antenna
 
-| CC1101 | ESP32 |
-|--------|-------|
-| VCC    | 3V3 (**never 5V**) |
-| GND    | GND |
-| SCK    | GPIO18 |
-| MISO   | GPIO19 |
-| MOSI   | GPIO23 |
-| CSn    | GPIO5 |
-| GDO0   | GPIO2 |
+The CC1101 is a **3.3 V-only** device. Never connect it to 5 V.
 
-## Usage
+### Alexis' 2.0 mm-pitch module
 
-1. Set `WIFI_SSID` / `WIFI_PASS` in `src/main.cpp`
-2. `pio run -t upload && pio device monitor`
-3. Press buttons on your Becker remote near the module
-4. `curl http://<esp32-ip>/frames` → captured frames as hex
-5. Share the captures — they drive the calibration of the Homey signal
-   definition (and validate the frame builder in `lib/BeckerProtocol.js`)
+Hold the module with components facing you, antenna holes at the top. The eight
+bottom pads are, from left to right:
 
-Transmit test (once capture confirms the format):
+| Pad | Signal | ESP32 |
+|----:|--------|-------|
+| 1 | VCC | 3V3 |
+| 2 | GND | GND |
+| 3 | MOSI / SI | GPIO23 |
+| 4 | SCLK | GPIO18 |
+| 5 | MISO / SO | GPIO19 |
+| 6 | **GDO2** | **GPIO4** |
+| 7 | GDO0 | Not connected |
+| 8 | CSN | GPIO5 |
 
-```bash
-curl -X POST "http://<esp32-ip>/tx?hex=<frame-hex>"
+The module pads use a **2.0 mm pitch**, so a continuous 2.54 mm breadboard
+header does not fit directly. Use a 2.0-to-2.54 mm adapter or individual wires.
+The centre antenna hole is `ANT`; the two outer holes are ground.
+
+> **Important:** the PNG wiring diagrams currently present in this folder show
+> an earlier generic 2.54 mm module and the obsolete GDO0/GPIO2 capture path.
+> Do not use them for this module. Follow the table above.
+
+Keep SPI wires short (ideally below 15 cm).
+
+## Build and flash
+
+1. Optionally set `WIFI_SSID` and `WIFI_PASS` in `src/main.cpp`. Leave them as
+   `CHANGE_ME` for serial-only capture.
+2. Disconnect the CC1101 while flashing the ESP32 for the first time.
+3. Run:
+
+   ```bash
+   pio run -t upload
+   pio device monitor
+   ```
+
+4. Power off, wire the CC1101 according to the table, then reconnect USB.
+
+The serial monitor runs at 115200 baud. A valid module reports an identity such
+as:
+
+```text
+CC1101 identity: PARTNUM=0x00 VERSION=0x14
+CC1101 ready: 868.283 MHz 2-FSK, async data on GDO2/GPIO4
 ```
 
-## Register set
+`VERSION=0x04` is also common. `0x00` or `0xFF` means the module was not
+identified; check power and SPI wiring. Capture remains disabled in that case,
+so an absent module can no longer create fake `ff` frames.
 
-The CC1101 registers in `src/main.cpp` are verbatim from the
+## Capture
+
+Press one Becker remote button near the CC1101 antenna. Accepted transmissions
+are printed as signed pulse durations:
+
+```text
+RAW n=96 c=417 D=-403,432,-826,846,...
+```
+
+- `n`: number of captured level durations
+- `c`: estimated Manchester half-clock in microseconds
+- negative duration: low level
+- positive duration: high level
+
+Becker signals are expected near 417 us (short) and 834 us (long). The firmware
+rejects obvious noise and keeps the full raw timing sequence for analysis.
+
+If Wi-Fi credentials are configured, the ESP32 also exposes:
+
+- `GET /frames` — stored raw captures
+- `POST /clear` — clear stored captures
+
+Wi-Fi is optional, uses reduced transmit power, and times out after 15 seconds;
+serial capture continues if Wi-Fi is unavailable.
+
+## Current scope
+
+This firmware is **capture-only**. Transmission is intentionally disabled until
+real captures establish the exact 65/66-bit on-air format. A CC1101 cannot
+produce valid future encrypted rolling codes without the required key and frame
+construction.
+
+The register set comes from
 [centronic-py TECHNICAL.md](https://github.com/ole1986/centronic-py/blob/master/TECHNICAL.md)
-FHEM/SIGNALduino configuration (2-FSK, 868.283 MHz).
-
-## Status
-
-**Untested on hardware.** Packet-length / sync-word handling may need
-adjustment after the first real captures — that is expected and part of the
-calibration loop.
+and its FHEM/SIGNALduino Becker configuration.
