@@ -38,11 +38,15 @@ static const int PIN_GDO2 = 4;
 // ---------- CC1101 low-level ----------
 static const uint8_t STROBE_SRES = 0x30;
 static const uint8_t STROBE_SRX = 0x34;
+static const uint8_t STROBE_SIDLE = 0x36;
+static const uint8_t STROBE_SFRX = 0x3A;
 static const uint8_t REG_PARTNUM = 0x30;
 static const uint8_t REG_VERSION = 0x31;
 static const uint8_t REG_RSSI = 0x34;
 static const uint8_t REG_MARCSTATE = 0x35;
 static const uint8_t REG_PKTSTATUS = 0x38;
+static const uint8_t REG_RXBYTES = 0x3B;
+static const uint8_t REG_FIFO = 0x3F;
 static const uint32_t CHIP_READY_TIMEOUT_US = 20000;
 
 // Becker Centronic register set from centronic-py / FHEM SIGNALduino:
@@ -276,16 +280,49 @@ static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
   storeFrame(frame);
 }
 
+static void recoverReceiveMode() {
+  strobe(STROBE_SIDLE);
+  strobe(STROBE_SFRX);
+  strobe(STROBE_SRX);
+}
+
 static void maintainReceiveMode() {
-  static uint32_t lastCheckMs = 0;
-  const uint32_t now = millis();
-  if (now - lastCheckMs < 500) return;
-  lastCheckMs = now;
+  static uint32_t lastFifoServiceUs = 0;
+  static uint32_t lastStateCheckMs = 0;
+  const uint32_t nowUs = micros();
+
+  // The SIGNALduino async configuration still accumulates bytes in RXFIFO.
+  // Discard them: GDO2 edge timings are the capture source. Without this
+  // service the radio reaches MARCSTATE 0x11 and GDO2 stops after one edge.
+  if (nowUs - lastFifoServiceUs >= 5000) {
+    lastFifoServiceUs = nowUs;
+    uint8_t rxBytes = 0;
+    if (readStatusReg(REG_RXBYTES, rxBytes)) {
+      if ((rxBytes & 0x80) != 0) {
+        recoverReceiveMode();
+        return;
+      }
+
+      uint8_t available = rxBytes & 0x7F;
+      if (available > 64) available = 64;
+      while (available-- > 0) {
+        uint8_t discarded = 0;
+        if (!spiTransfer(REG_FIFO | 0xC0, 0x00, discarded)) break;
+      }
+    }
+  }
+
+  const uint32_t nowMs = millis();
+  if (nowMs - lastStateCheckMs < 500) return;
+  lastStateCheckMs = nowMs;
 
   uint8_t marcState = 0;
   if (!readStatusReg(REG_MARCSTATE, marcState)) return;
-  if ((marcState & 0x1F) == 0x01) { // IDLE
+  const uint8_t state = marcState & 0x1F;
+  if (state == 0x01) { // IDLE
     strobe(STROBE_SRX);
+  } else if (state == 0x11) { // RXFIFO_OVERFLOW
+    recoverReceiveMode();
   }
 }
 
