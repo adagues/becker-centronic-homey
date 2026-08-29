@@ -68,22 +68,36 @@ CC1101 ready: 868.283 MHz 2-FSK, async data on GDO2/GPIO4
 identified; check power and SPI wiring. Capture remains disabled in that case,
 so an absent module can no longer create fake `ff` frames.
 
-## Capture
+## Capture and frame-length diagnostic
 
-Press one Becker remote button near the CC1101 antenna. Accepted transmissions
-are printed as signed pulse durations:
+The firmware prints a radio heartbeat every two seconds:
 
 ```text
-RAW n=96 c=417 D=-403,432,-826,846,...
+DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00
+```
+
+`marc=0x0D` means that the CC1101 is in RX. Pressing a remote button should make
+`edges` and `delta` increase even when the pulse train does not yet match the
+expected Becker timing.
+
+Every burst containing at least two pulse durations is printed without a timing
+filter:
+
+```text
+BURST n=96 total_us=54180 match=98% c=417 halfbits=130 bits_est=65.0 D=-403,432,-826,846,...
 ```
 
 - `n`: number of captured level durations
+- `total_us`: observed burst duration
+- `match`: percentage of durations matching the expected 417/834 us timing
 - `c`: estimated Manchester half-clock in microseconds
-- negative duration: low level
-- positive duration: high level
+- `halfbits`: estimated count of Manchester half-bits
+- `bits_est`: direct frame-length estimate (`halfbits / 2`)
+- negative duration: low level; positive duration: high level
 
-Becker signals are expected near 417 us (short) and 834 us (long). The firmware
-rejects obvious noise and keeps the full raw timing sequence for analysis.
+`BURST_OVERFLOW` means more than 512 durations were seen without a frame gap.
+The complete timing sequence is kept so the framing assumptions can be checked
+instead of silently rejecting an unexpected but potentially valid signal.
 
 If Wi-Fi credentials are configured, the ESP32 also exposes:
 

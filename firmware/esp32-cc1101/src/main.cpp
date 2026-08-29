@@ -40,6 +40,9 @@ static const uint8_t STROBE_SRES = 0x30;
 static const uint8_t STROBE_SRX = 0x34;
 static const uint8_t REG_PARTNUM = 0x30;
 static const uint8_t REG_VERSION = 0x31;
+static const uint8_t REG_RSSI = 0x34;
+static const uint8_t REG_MARCSTATE = 0x35;
+static const uint8_t REG_PKTSTATUS = 0x38;
 static const uint32_t CHIP_READY_TIMEOUT_US = 20000;
 
 // Becker Centronic register set from centronic-py / FHEM SIGNALduino:
@@ -149,7 +152,6 @@ static bool cc1101Init() {
 
 // ---------- asynchronous pulse capture ----------
 static const size_t MAX_PULSES = 512;
-static const size_t MIN_FRAME_PULSES = 40;
 static const uint32_t FRAME_GAP_US = 2500;
 static const uint32_t MIN_GLITCH_US = 80;
 
@@ -158,6 +160,7 @@ static volatile uint8_t pulseLevels[MAX_PULSES];
 static volatile size_t pulseCount = 0;
 static volatile uint32_t lastEdgeUs = 0;
 static volatile bool pulseOverflow = false;
+static volatile uint32_t totalEdgeCount = 0;
 static portMUX_TYPE pulseMux = portMUX_INITIALIZER_UNLOCKED;
 
 static void IRAM_ATTR onGdo2Edge() {
@@ -167,6 +170,7 @@ static void IRAM_ATTR onGdo2Edge() {
   lastEdgeUs = now;
 
   portENTER_CRITICAL_ISR(&pulseMux);
+  totalEdgeCount++;
   if (duration > FRAME_GAP_US) {
     // The loop normally consumes the preceding frame during the idle gap.
     // If it did not, start clean rather than merging two transmissions.
@@ -224,19 +228,15 @@ static void storeFrame(const String& frame) {
 
 static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
                               size_t count, bool overflow) {
-  if (overflow) {
-    Serial.println("RAW dropped: pulse buffer overflow");
-    return;
-  }
-  if (count < MIN_FRAME_PULSES) return;
+  if (count < 2) return;
 
-  // Becker Manchester timings are approximately 417 us and 834 us.
-  // Reject obvious noise while retaining the complete raw pulse train.
+  uint32_t totalDuration = 0;
   size_t timingMatches = 0;
   uint32_t clockSum = 0;
   size_t clockSamples = 0;
   for (size_t i = 0; i < count; i++) {
     const uint16_t duration = durations[i];
+    totalDuration += duration;
     if (duration >= 250 && duration <= 600) {
       timingMatches++;
       clockSum += duration;
@@ -247,10 +247,25 @@ static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
       clockSamples++;
     }
   }
-  if (timingMatches * 100 < count * 70 || clockSamples == 0) return;
 
-  const uint32_t estimatedClock = clockSum / clockSamples;
-  String frame = "RAW n=" + String(count) + " c=" + String(estimatedClock) + " D=";
+  const uint32_t estimatedClock = clockSamples == 0 ? 0 : clockSum / clockSamples;
+  uint32_t estimatedHalfBits = 0;
+  if (estimatedClock != 0) {
+    for (size_t i = 0; i < count; i++) {
+      const uint32_t units = (durations[i] + estimatedClock / 2) / estimatedClock;
+      if (units >= 1 && units <= 4) estimatedHalfBits += units;
+    }
+  }
+
+  const uint32_t matchPercent = count == 0 ? 0 : timingMatches * 100 / count;
+  String frame = overflow ? "BURST_OVERFLOW" : "BURST";
+  frame += " n=" + String(count);
+  frame += " total_us=" + String(totalDuration);
+  frame += " match=" + String(matchPercent) + "%";
+  frame += " c=" + String(estimatedClock);
+  frame += " halfbits=" + String(estimatedHalfBits);
+  frame += " bits_est=" + String(estimatedHalfBits / 2.0f, 1);
+  frame += " D=";
   frame.reserve(frame.length() + count * 6);
   for (size_t i = 0; i < count; i++) {
     if (i != 0) frame += ',';
@@ -258,6 +273,36 @@ static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
     frame += String(durations[i]);
   }
   storeFrame(frame);
+}
+
+static void printRadioDiagnostic() {
+  static uint32_t lastReportMs = 0;
+  static uint32_t previousEdgeCount = 0;
+  const uint32_t now = millis();
+  if (now - lastReportMs < 2000) return;
+  lastReportMs = now;
+
+  uint32_t edges = 0;
+  portENTER_CRITICAL(&pulseMux);
+  edges = totalEdgeCount;
+  portEXIT_CRITICAL(&pulseMux);
+
+  uint8_t rawRssi = 0;
+  uint8_t marcState = 0;
+  uint8_t packetStatus = 0;
+  if (!readStatusReg(REG_RSSI, rawRssi) ||
+      !readStatusReg(REG_MARCSTATE, marcState) ||
+      !readStatusReg(REG_PKTSTATUS, packetStatus)) {
+    Serial.println("DIAG SPI read failed");
+    return;
+  }
+
+  const int rssiDbm = static_cast<int8_t>(rawRssi) / 2 - 74;
+  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X\n",
+                static_cast<unsigned long>(edges),
+                static_cast<unsigned long>(edges - previousEdgeCount),
+                digitalRead(PIN_GDO2), marcState & 0x1F, rssiDbm, packetStatus);
+  previousEdgeCount = edges;
 }
 
 static void pollPulseCapture() {
@@ -335,11 +380,14 @@ void setup() {
   }
 
   startWifi();
-  Serial.println("Ready. Press a Becker remote button near the antenna.");
+  Serial.println("Ready. DIAG reports every 2s; press a Becker remote button.");
 }
 
 void loop() {
   if (wifiConnected) server.handleClient();
-  if (cc1101Present) pollPulseCapture();
+  if (cc1101Present) {
+    pollPulseCapture();
+    printRadioDiagnostic();
+  }
   delay(1);
 }
