@@ -280,10 +280,32 @@ static void processPulseFrame(const uint16_t* durations, const uint8_t* levels,
   storeFrame(frame);
 }
 
-static void recoverReceiveMode() {
-  strobe(STROBE_SIDLE);
-  strobe(STROBE_SFRX);
-  strobe(STROBE_SRX);
+static bool waitForMarcState(uint8_t expectedState, uint32_t timeoutUs = 20000) {
+  const uint32_t started = micros();
+  do {
+    uint8_t marcState = 0;
+    if (readStatusReg(REG_MARCSTATE, marcState) &&
+        (marcState & 0x1F) == expectedState) {
+      return true;
+    }
+    delayMicroseconds(50);
+  } while (micros() - started < timeoutUs);
+  return false;
+}
+
+static bool recoverReceiveMode() {
+  // SFRX is only legal in IDLE. Wait for each MARC transition instead of
+  // issuing three strobes back-to-back while the radio is still in RX_RST.
+  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01)) return false;
+  if (!strobe(STROBE_SFRX)) return false;
+  if (!strobe(STROBE_SRX) || !waitForMarcState(0x0D)) return false;
+
+  portENTER_CRITICAL(&pulseMux);
+  pulseCount = 0;
+  pulseOverflow = false;
+  lastEdgeUs = micros();
+  portEXIT_CRITICAL(&pulseMux);
+  return true;
 }
 
 static void maintainReceiveMode() {
@@ -319,9 +341,9 @@ static void maintainReceiveMode() {
   uint8_t marcState = 0;
   if (!readStatusReg(REG_MARCSTATE, marcState)) return;
   const uint8_t state = marcState & 0x1F;
-  if (state == 0x01) { // IDLE
+  if (state == 0x01) { // IDLE: no FIFO flush needed
     strobe(STROBE_SRX);
-  } else if (state == 0x11) { // RXFIFO_OVERFLOW
+  } else if (state != 0x0D) { // Any state stuck outside RX, including 0x0F/0x11
     recoverReceiveMode();
   }
 }
