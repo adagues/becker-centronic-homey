@@ -73,7 +73,7 @@ so an absent module can no longer create fake `ff` frames.
 The firmware prints a radio heartbeat every two seconds:
 
 ```text
-DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00 mc=0 reject=0 drop=0
+DIAG edges=0 delta=0/2s gdo2=1 marc=0x0D rssi=-93dBm pkt=0x00 mc=0 reject=0 drop=0 glitches=0
 ```
 
 `marc=0x0D` means that the CC1101 is in RX. The firmware configures MCSM1 to
@@ -98,25 +98,30 @@ A sliding Manchester detector:
 A detected frame is printed as:
 
 ```text
-MC bits=65 c=417 pulses=96 halfbits=130 phase=0 hex=FFE9BC20B299FC858 inv=001643DF4D66037A0 D=-403,432,-826,846,...
+MC bits=65 c=417 pulses=96 halfbits=130 glitches=4 phase=0 hex=FFE9BC20B299FC858 inv=001643DF4D66037A0 D=-403,432,-826,846,...
 ```
 
 - `bits`: exact length of the longest coherent Manchester sequence
 - `c`: estimated half-bit clock in microseconds
 - `pulses` / `halfbits`: timing-run sizes before Manchester extraction
+- `glitches`: narrow opposite-level pulses merged before timing classification
 - `phase`: selected half-bit pairing offset (0 or 1)
 - `hex`: decoded polarity candidate, padded on the right to a full nibble
 - `inv`: inverse-polarity candidate
 - `D`: signed raw durations for independent checking
 
-The periodic `DIAG` line includes `mc`, `reject`, and `drop`: detected frames,
-timing-compatible runs rejected by Manchester validation, and ISR chunk
-overflows. Continuous asynchronous RF noise should raise `edges` and possibly
+The periodic `DIAG` line includes `mc`, `reject`, `drop`, and `glitches`:
+detected frames, timing-compatible runs rejected by Manchester validation, ISR
+chunk overflows, and cumulative narrow pulses merged by the deglitcher. Continuous asynchronous RF noise should raise `edges` and possibly
 `reject`, but must not produce `MC` frames unless it contains a coherent run.
 
+Before timing classification, an `A - short opposite level - A` sequence
+whose middle interval is below 220 us is merged into one stable pulse. The ISR
+keeps intervals from 20 us upward so those glitches remain reconstructable.
+
 The detector itself is hardware-independent and covered by a host test with
-synthetic 65-bit and 66-bit frames, polarity inversion, timing jitter, noise
-boundaries, and timing-compatible non-Manchester noise.
+synthetic 65-bit and 66-bit frames, polarity inversion, timing jitter, injected
+90 us glitches, noise boundaries, and timing-compatible non-Manchester noise.
 
 If Wi-Fi credentials are configured, the ESP32 also exposes:
 

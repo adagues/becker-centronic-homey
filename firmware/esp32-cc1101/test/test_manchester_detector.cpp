@@ -9,7 +9,8 @@ using becker::ManchesterEvent;
 using becker::ManchesterResult;
 
 static ManchesterEvent feedFrame(const uint8_t* bits, size_t bitCount,
-                                  bool invert, ManchesterDetector& detector,
+                                  bool invert, bool injectGlitches,
+                                  ManchesterDetector& detector,
                                   ManchesterResult& result) {
   uint8_t halfLevels[ManchesterResult::kMaxBits * 2] = {};
   size_t halfCount = 0;
@@ -33,12 +34,24 @@ static ManchesterEvent feedFrame(const uint8_t* bits, size_t bitCount,
     assert(units <= 2);
     const int jitter = static_cast<int>((pulseIndex % 7) * 6) - 18;
     const uint16_t duration = static_cast<uint16_t>(417 * units + jitter);
-    const ManchesterEvent event = detector.push(duration, level, result);
-    assert(event == ManchesterEvent::None);
+
+    if (injectGlitches && units == 2 && pulseIndex % 5 == 2) {
+      const uint16_t firstPart = 300;
+      const uint16_t glitch = 90;
+      const uint16_t secondPart = duration - firstPart - glitch;
+      assert(secondPart > ManchesterDetector::kGlitchMaxUs);
+      assert(detector.push(firstPart, level, result) == ManchesterEvent::None);
+      assert(detector.push(glitch, level ^ 1, result) == ManchesterEvent::None);
+      assert(detector.push(secondPart, level, result) == ManchesterEvent::None);
+    } else {
+      assert(detector.push(duration, level, result) == ManchesterEvent::None);
+    }
+
     pulseIndex++;
     i += units;
   }
-  return detector.push(1400, 0, result);
+  assert(detector.push(1400, 0, result) == ManchesterEvent::None);
+  return detector.flush(result);
 }
 
 static void testDetects65BitsWithNoiseBoundaries() {
@@ -50,10 +63,28 @@ static void testDetects65BitsWithNoiseBoundaries() {
   for (size_t i = 0; i < 20; i++) {
     detector.push(i % 2 == 0 ? 120 : 730, 0, result);
   }
-  const ManchesterEvent event = feedFrame(bits, 65, false, detector, result);
+  const ManchesterEvent event =
+      feedFrame(bits, 65, false, false, detector, result);
   assert(event == ManchesterEvent::Detected);
   assert(result.bitCount == 65);
   assert(result.clockUs >= 400 && result.clockUs <= 435);
+  assert(result.glitchCount == 0);
+  for (size_t i = 0; i < 65; i++) assert(result.bits[i] == bits[i]);
+}
+
+static void testDetects65BitsWithNarrowGlitches() {
+  uint8_t bits[65] = {};
+  // This pattern creates both one- and two-half-bit pulse widths.
+  for (size_t i = 0; i < 65; i++) bits[i] = ((i * 5 + i / 3) & 1) != 0;
+
+  ManchesterDetector detector;
+  ManchesterResult result;
+  const ManchesterEvent event =
+      feedFrame(bits, 65, false, true, detector, result);
+  assert(event == ManchesterEvent::Detected);
+  assert(result.bitCount == 65);
+  assert(result.glitchCount > 0);
+  assert(detector.mergedGlitchCount() == result.glitchCount);
   for (size_t i = 0; i < 65; i++) assert(result.bits[i] == bits[i]);
 }
 
@@ -63,9 +94,11 @@ static void testDetectsInvertedPolarity() {
 
   ManchesterDetector detector;
   ManchesterResult result;
-  const ManchesterEvent event = feedFrame(bits, 66, true, detector, result);
+  const ManchesterEvent event =
+      feedFrame(bits, 66, true, true, detector, result);
   assert(event == ManchesterEvent::Detected);
   assert(result.bitCount == 66);
+  assert(result.glitchCount > 0);
   for (size_t i = 0; i < 66; i++) assert(result.bits[i] == (bits[i] ^ 1));
 }
 
@@ -76,13 +109,15 @@ static void testRejectsTimingCompatibleNoise() {
     const ManchesterEvent event = detector.push(i % 2 == 0 ? 410 : 820, 1, result);
     assert(event == ManchesterEvent::None);
   }
-  const ManchesterEvent event = detector.push(1500, 0, result);
+  assert(detector.push(1500, 0, result) == ManchesterEvent::None);
+  const ManchesterEvent event = detector.flush(result);
   assert(event == ManchesterEvent::Rejected);
   assert(result.bitCount < 40);
 }
 
 int main() {
   testDetects65BitsWithNoiseBoundaries();
+  testDetects65BitsWithNarrowGlitches();
   testDetectsInvertedPolarity();
   testRejectsTimingCompatibleNoise();
   puts("Manchester detector tests passed");

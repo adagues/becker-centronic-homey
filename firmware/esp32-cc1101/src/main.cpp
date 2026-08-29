@@ -161,7 +161,7 @@ static bool cc1101Init() {
 static const size_t MAX_PULSES = 512;
 static const size_t STREAM_CHUNK_PULSES = 64;
 static const uint32_t FRAME_GAP_US = 2500;
-static const uint32_t MIN_GLITCH_US = 80;
+static const uint32_t MIN_CAPTURE_PULSE_US = 20;
 
 static volatile uint16_t pulseDurations[MAX_PULSES];
 static volatile uint8_t pulseLevels[MAX_PULSES];
@@ -184,7 +184,7 @@ static void IRAM_ATTR onGdo2Edge() {
 
   portENTER_CRITICAL_ISR(&pulseMux);
   totalEdgeCount++;
-  if (duration >= MIN_GLITCH_US) {
+  if (duration >= MIN_CAPTURE_PULSE_US) {
     if (pulseCount < MAX_PULSES) {
       pulseDurations[pulseCount] =
           static_cast<uint16_t>(duration > UINT16_MAX ? UINT16_MAX : duration);
@@ -271,6 +271,7 @@ static void handleManchesterEvent(becker::ManchesterEvent event,
   frame += " c=" + String(result.clockUs);
   frame += " pulses=" + String(result.pulseCount);
   frame += " halfbits=" + String(result.halfBitCount);
+  frame += " glitches=" + String(result.glitchCount);
   frame += " phase=" + String(result.phase);
   frame += " hex=" + bitsToHex(result, false);
   frame += " inv=" + bitsToHex(result, true);
@@ -402,13 +403,14 @@ static void printRadioDiagnostic() {
   }
 
   const int rssiDbm = static_cast<int8_t>(rawRssi) / 2 - 74;
-  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X mc=%lu reject=%lu drop=%lu\n",
+  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X mc=%lu reject=%lu drop=%lu glitches=%lu\n",
                 static_cast<unsigned long>(edges),
                 static_cast<unsigned long>(edges - previousEdgeCount),
                 digitalRead(PIN_GDO2), marcState & 0x1F, rssiDbm, packetStatus,
                 static_cast<unsigned long>(manchesterDetected),
                 static_cast<unsigned long>(manchesterRejected),
-                static_cast<unsigned long>(captureOverflows));
+                static_cast<unsigned long>(captureOverflows),
+                static_cast<unsigned long>(manchesterDetector.mergedGlitchCount()));
   previousEdgeCount = edges;
 }
 

@@ -19,6 +19,7 @@ struct ManchesterResult {
   uint16_t clockUs = 0;
   uint16_t halfBitCount = 0;
   uint16_t bitCount = 0;
+  uint16_t glitchCount = 0;
   uint8_t phase = 0;
   uint8_t bits[kMaxBits] = {};
   uint16_t durations[kMaxPulses] = {};
@@ -27,6 +28,7 @@ struct ManchesterResult {
 
 class ManchesterDetector {
  public:
+  static constexpr uint16_t kGlitchMaxUs = 220;
   static constexpr uint16_t kShortMinUs = 240;
   static constexpr uint16_t kShortMaxUs = 620;
   static constexpr uint16_t kLongMinUs = 650;
@@ -35,6 +37,89 @@ class ManchesterDetector {
 
   ManchesterEvent push(uint16_t duration, uint8_t level,
                        ManchesterResult& result) {
+    level = level ? 1 : 0;
+
+    if (!hasPending_) {
+      // A leading narrow pulse has no stable neighbour on both sides and
+      // cannot be reconstructed safely.
+      if (duration < kGlitchMaxUs) return ManchesterEvent::None;
+      setPending(duration, level);
+      return ManchesterEvent::None;
+    }
+
+    if (hasGlitch_) {
+      if (level == pendingLevel_) {
+        // A -- short opposite-level glitch -- A. Merge all three intervals
+        // before timing classification so a real 417/834 us pulse is restored.
+        const uint32_t merged = static_cast<uint32_t>(pendingDuration_) +
+                                glitchDuration_ + duration;
+        pendingDuration_ = static_cast<uint16_t>(
+            merged > UINT16_MAX ? UINT16_MAX : merged);
+        hasGlitch_ = false;
+        totalMergedGlitches_++;
+        pendingMergedGlitches_++;
+        return ManchesterEvent::None;
+      }
+
+      // The short interval was not enclosed by the same level. Treat it as a
+      // hard boundary rather than inventing a merge across an unknown edge.
+      ManchesterEvent event = pushTimingPulse(
+          pendingDuration_, pendingLevel_, pendingMergedGlitches_, result);
+      if (event == ManchesterEvent::None) event = finish(result);
+      clearPending();
+      if (duration >= kGlitchMaxUs) setPending(duration, level);
+      return event;
+    }
+
+    if (duration < kGlitchMaxUs) {
+      hasGlitch_ = true;
+      glitchDuration_ = duration;
+      return ManchesterEvent::None;
+    }
+
+    const ManchesterEvent event = pushTimingPulse(
+        pendingDuration_, pendingLevel_, pendingMergedGlitches_, result);
+    setPending(duration, level);
+    return event;
+  }
+
+  ManchesterEvent flush(ManchesterResult& result) {
+    ManchesterEvent event = ManchesterEvent::None;
+    if (hasPending_) {
+      event = pushTimingPulse(
+          pendingDuration_, pendingLevel_, pendingMergedGlitches_, result);
+    }
+    clearPending();
+    if (event != ManchesterEvent::None) return event;
+    return finish(result);
+  }
+
+  void reset() {
+    resetRun();
+    clearPending();
+  }
+
+  uint32_t mergedGlitchCount() const { return totalMergedGlitches_; }
+
+ private:
+  void setPending(uint16_t duration, uint8_t level) {
+    hasPending_ = true;
+    pendingDuration_ = duration;
+    pendingLevel_ = level;
+    pendingMergedGlitches_ = 0;
+  }
+
+  void clearPending() {
+    hasPending_ = false;
+    hasGlitch_ = false;
+    pendingDuration_ = 0;
+    glitchDuration_ = 0;
+    pendingMergedGlitches_ = 0;
+  }
+
+  ManchesterEvent pushTimingPulse(uint16_t duration, uint8_t level,
+                                  uint16_t mergedGlitches,
+                                  ManchesterResult& result) {
     uint8_t units = 0;
     uint16_t clockSample = 0;
     if (duration >= kShortMinUs && duration <= kShortMaxUs) {
@@ -47,30 +132,21 @@ class ManchesterDetector {
       return finish(result);
     }
 
-    if (pulseCount_ == ManchesterResult::kMaxPulses) {
-      const ManchesterEvent event = finish(result);
-      if (event != ManchesterEvent::None) return event;
-    }
+    ManchesterEvent event = ManchesterEvent::None;
+    if (pulseCount_ == ManchesterResult::kMaxPulses) event = finish(result);
 
     durations_[pulseCount_] = duration;
-    levels_[pulseCount_] = level ? 1 : 0;
+    levels_[pulseCount_] = level;
     units_[pulseCount_] = units;
     pulseCount_++;
     clockSum_ += clockSample;
-    return ManchesterEvent::None;
+    runMergedGlitches_ += mergedGlitches;
+    return event;
   }
 
-  ManchesterEvent flush(ManchesterResult& result) { return finish(result); }
-
-  void reset() {
-    pulseCount_ = 0;
-    clockSum_ = 0;
-  }
-
- private:
   ManchesterEvent finish(ManchesterResult& result) {
     if (pulseCount_ < kMinTimingPulses) {
-      reset();
+      resetRun();
       return ManchesterEvent::None;
     }
 
@@ -110,6 +186,7 @@ class ManchesterDetector {
     result.clockUs = clockUs;
     result.halfBitCount = static_cast<uint16_t>(halfCount);
     result.bitCount = static_cast<uint16_t>(bestBits);
+    result.glitchCount = runMergedGlitches_;
     result.phase = bestPhase;
     for (size_t i = 0; i < pulseCount_; i++) {
       result.durations[i] = durations_[i];
@@ -120,16 +197,21 @@ class ManchesterDetector {
       const size_t firstHalf = bestPhase + bestStart * 2;
       for (size_t bit = 0; bit < bestBits; bit++) {
         const size_t half = firstHalf + bit * 2;
-        // Polarity is intentionally explicit; callers also print its inverse.
         result.bits[bit] =
             (halfLevels[half] == 1 && halfLevels[half + 1] == 0) ? 1 : 0;
       }
-      reset();
+      resetRun();
       return ManchesterEvent::Detected;
     }
 
-    reset();
+    resetRun();
     return ManchesterEvent::Rejected;
+  }
+
+  void resetRun() {
+    pulseCount_ = 0;
+    clockSum_ = 0;
+    runMergedGlitches_ = 0;
   }
 
   uint16_t durations_[ManchesterResult::kMaxPulses] = {};
@@ -137,6 +219,15 @@ class ManchesterDetector {
   uint8_t units_[ManchesterResult::kMaxPulses] = {};
   size_t pulseCount_ = 0;
   uint32_t clockSum_ = 0;
+  uint16_t runMergedGlitches_ = 0;
+
+  bool hasPending_ = false;
+  uint16_t pendingDuration_ = 0;
+  uint8_t pendingLevel_ = 0;
+  uint16_t pendingMergedGlitches_ = 0;
+  bool hasGlitch_ = false;
+  uint16_t glitchDuration_ = 0;
+  uint32_t totalMergedGlitches_ = 0;
 };
 
 }  // namespace becker
