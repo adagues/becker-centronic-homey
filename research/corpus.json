@@ -1,12 +1,47 @@
 {
-  "schema": 1,
+  "schema": 2,
+  "campaigns": {
+    "fhem-ole1986-2020": {
+      "source": "https://forum.fhem.de/index.php/topic,110043.msg1040546.html",
+      "receiver": "SIGNALduino",
+      "frequency_mhz": 868.283,
+      "modulation": "2-FSK",
+      "notes": "Chosen-input capture produced by a Becker USB stick."
+    },
+    "alexis-esp32-2026-08-30": {
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "receiver": "ESP32 + CC1101 asynchronous GDO2 capture",
+      "frequency_mhz": 868.32486,
+      "modulation": "2-FSK",
+      "clock_us_observed": [416, 417],
+      "repetitions_per_press_observed": {
+        "minimum": 3,
+        "maximum": 5
+      },
+      "unknowns": [
+        "remote model",
+        "selected channel",
+        "button or command",
+        "exact repeat count for each listed payload"
+      ],
+      "caveats": [
+        "Only two payloads retain their full MC diagnostic line.",
+        "The other six payloads were preserved as 64-bit hexadecimal values without raw pulses or a declared decoder bit count.",
+        "Two of four inspected frames reportedly had 129 half-bits, but the affected payload identifiers were not recorded."
+      ]
+    }
+  },
   "captures": [
     {
       "id": "fhem-ole1986-down-unit-1737c-counter-0-channel-1",
+      "campaign_id": "fhem-ole1986-2020",
       "source": "https://forum.fhem.de/index.php/topic,110043.msg1040546.html",
+      "analysis_group": null,
       "logical_frame_hex": "0000000002010B00000000001737C0210101004084",
       "rf_demodulated_hex": "CA5E62DB2542C1DB8",
       "rf_valid_bits": 66,
+      "rf_left_trim": null,
+      "analysis_projection": null,
       "clock_us": 414,
       "timings_us": {
         "long_low": -809,
@@ -15,6 +50,13 @@
         "short_high": 443
       },
       "rssi": 202,
+      "capture_context": {
+        "press_index": null,
+        "repeat_index": null,
+        "button": "DOWN",
+        "channel": 1,
+        "press_type": null
+      },
       "known_fields": {
         "counter": 0,
         "unit_id_hex": "1737C",
@@ -22,7 +64,344 @@
         "command": "DOWN",
         "command_hex": "40"
       },
-      "notes": "Captured by SIGNALduino from a Becker USB stick configured with chosen counter/unit/channel. D is already Manchester-demodulated. The 17 hex digits contain 68 storage bits but L=66 marks only 66 valid bits, so the two padding-bit alignment is unknown."
+      "decode_quality": {
+        "confidence": "reference",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": [
+          "The 17 hex digits contain 68 storage bits while L=66; left-versus-right padding alignment is unknown."
+        ]
+      },
+      "notes": "Captured by SIGNALduino from a Becker USB stick configured with chosen counter, unit and channel. D is already Manchester-demodulated."
+    },
+    {
+      "id": "alexis-20260830-press-01",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "68324BE64D4821690",
+      "rf_valid_bits": 65,
+      "rf_left_trim": 0,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Use the first 64 decoded bits for comparison with payload-only entries."
+      },
+      "clock_us": 416,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 1,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "repeat-verified",
+        "pulse_count": 94,
+        "half_bit_count": 130,
+        "glitches": 0,
+        "caveats": []
+      },
+      "notes": "Full MC diagnostic retained; payload reportedly repeated consistently within its press. The firmware hex encoder right-pads the final partial nibble."
+    },
+    {
+      "id": "alexis-20260830-press-02",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "3AD118F21DFDE7DF0",
+      "rf_valid_bits": 65,
+      "rf_left_trim": 0,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Use the first 64 decoded bits for comparison with payload-only entries."
+      },
+      "clock_us": 417,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 2,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "repeat-verified",
+        "pulse_count": 104,
+        "half_bit_count": 130,
+        "glitches": 0,
+        "caveats": []
+      },
+      "notes": "Full MC diagnostic retained; payload reportedly repeated consistently within its press. The firmware hex encoder right-pads the final partial nibble."
+    },
+    {
+      "id": "alexis-20260830-press-03",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "7E2359553984D3C0",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 3,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
+    },
+    {
+      "id": "alexis-20260830-press-04",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "32EED09DADB25FF3",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 4,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
+    },
+    {
+      "id": "alexis-20260830-press-05",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "563DA940518E6BE6",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 5,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
+    },
+    {
+      "id": "alexis-20260830-press-06",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "4BE0EEAB6B39AF1A",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 6,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
+    },
+    {
+      "id": "alexis-20260830-press-07",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "24FC7459922342AF",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 7,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
+    },
+    {
+      "id": "alexis-20260830-press-08",
+      "campaign_id": "alexis-esp32-2026-08-30",
+      "source": "firmware/esp32-cc1101/README.md#results-real-frames-captured-2026-08-30",
+      "analysis_group": "alexis-cross-press-64bit-provisional",
+      "logical_frame_hex": null,
+      "rf_demodulated_hex": "13C7E68423609F0C",
+      "rf_valid_bits": null,
+      "rf_left_trim": null,
+      "analysis_projection": {
+        "left_trim": 0,
+        "bit_length": 64,
+        "status": "provisional",
+        "reason": "Only this 64-bit payload representation was retained in the README."
+      },
+      "clock_us": null,
+      "timings_us": null,
+      "rssi": null,
+      "capture_context": {
+        "press_index": 8,
+        "repeat_index": null,
+        "button": null,
+        "channel": null,
+        "press_type": null
+      },
+      "known_fields": {
+        "counter": null,
+        "unit_id_hex": null,
+        "channel": null,
+        "command": null,
+        "command_hex": null
+      },
+      "decode_quality": {
+        "confidence": "documented-payload-only",
+        "pulse_count": null,
+        "half_bit_count": null,
+        "glitches": null,
+        "caveats": ["Exact decoder bit count and raw pulse train were not retained."]
+      },
+      "notes": "Do not treat this entry as a verified complete 65- or 66-bit frame."
     }
   ]
 }

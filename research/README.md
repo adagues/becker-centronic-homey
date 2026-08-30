@@ -110,3 +110,53 @@ contain a Becker device/manufacturer key, and therefore cannot yet produce a
 rolling code that a Becker receiver will accept. Captures and/or readout of the
 owner's PIC16F636 are still required to determine Becker's exact field layout,
 key and key-derivation convention.
+
+## Corpus schema v2 and evidence levels
+
+`corpus.json` now separates campaign-wide facts from individual captures. Every
+capture records its provenance, context, decoder quality and unknown fields.
+Unknown values stay `null`; they must never be inferred from payload appearance.
+
+Three evidence levels are accepted:
+
+- `reference`: a published capture with independently documented parameters;
+- `repeat-verified`: a full local decoder line whose payload repeated during the
+  same button press;
+- `documented-payload-only`: a historical payload without its raw pulse train or
+  exact decoder bit count.
+
+The eight local payloads are retained, but only the first two contain complete
+65-bit diagnostics. For cross-press exploration all eight declare an explicit,
+**provisional** 64-bit projection. This projection is suitable for locating
+candidate stable/variable positions; it is not evidence that the six
+payload-only records are complete 64-bit RF frames.
+
+The analyzer validates the schema before printing results:
+
+```bash
+python3 research/analyze_captures.py
+python3 -m unittest discover -s research -p 'test_*.py'
+```
+
+### Next capture campaign
+
+Create one corpus entry for every decoded repeat, not just one line per press.
+Retain the complete serial `MC ... D=...` line or the `/frames` JSON response.
+For each press record:
+
+| Field | Requirement |
+|-------|-------------|
+| timestamp | UTC ISO-8601 |
+| remote | stable anonymous identifier and exact model when known |
+| button/channel | explicit value; use `null` when genuinely unknown |
+| press | short/long plus monotonically increasing press index |
+| repeat | repeat index within the press |
+| decoder | bit count, clock, pulse count, half-bit count, phase and glitches |
+| RF | full demodulated hex and signed raw pulse durations |
+| receiver | firmware commit, centre frequency, modulation and RSSI |
+
+Capture at minimum 16 consecutive presses of one button/channel, 8 presses each
+of two other commands, every available channel, and one long hold. A capture is
+eligible for framing analysis only when all repeats inside a press normalize to
+the same bitstream and no half-bit loss is reported. Keep questionable records
+in the corpus with a caveat; do not silently discard or repair them.

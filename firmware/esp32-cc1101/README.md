@@ -277,24 +277,31 @@ prefix survives between presses.
 
 ### What that means
 
-The frame length matches KeeLoq's 66-bit transmission format, of which 32 bits
-are encrypted. The absence of any fixed field confirms a rolling code, so:
+The observed length is close to the classic 66-bit KeeLoq transmission format,
+but the current captures do **not** prove KeeLoq. A classic KeeLoq frame normally
+contains a substantial fixed/function field; the lack of an obvious fixed field
+in the provisional comparison may instead mean framing loss, an incorrect
+alignment, additional whitening, or a different algorithm.
 
-- capture and decode: solved
-- replay or synthesis of a valid command: **not possible** without the 64-bit
-  manufacturer key, which lives inside the remote's PIC16F636 and cannot be read
-  out. Brute forcing 2^64 is not an option.
+What is established today:
 
-Two caveats, stated honestly. Two of the four analysed frames returned an odd
-half-bit count (129), which means a half-bit was lost; in Manchester that flips
-the pairing phase for the rest of the frame and randomises everything after it.
-So part of the difference between payloads may be decode error rather than real
-payload change. Cleaner captures would settle it — but they would not change the
-conclusion above, because a correct decode still yields no key.
+- RF reception and repeatable Manchester decoding work;
+- consecutive presses produce different payloads, consistent with rolling or
+  cryptographically transformed data;
+- reliable synthesis of a future accepted command is blocked until the exact
+  framing and transformation (including any device/manufacturer key) are known;
+- exhaustive search of an unconstrained 64-bit key is not realistic.
+
+The repository does not yet prove where a key is stored or whether the
+PIC16F636 is read-protected. Two of four inspected frames reportedly had an odd
+half-bit count (129), but the affected payload identifiers were not retained.
+Cleaner, fully labelled captures are therefore required before drawing a firm
+cipher or field-layout conclusion.
 
 ### Consequence for the Homey goal
 
-Sniffing cannot deliver control of these shutters. The remaining viable route is
-the fallback already identified: drive the existing remote's buttons physically
-from an ESP32 (opto-isolated or transistor across each button), which sidesteps
-the cryptography entirely and uses the remote as its own authorised transmitter.
+Native RF remains the project direction. The next gate is a structured capture
+campaign: preserve every repeated raw pulse train, establish an exact 65/66-bit
+frame boundary, and map stable versus changing positions by command and channel.
+Only after that should key extraction or algorithm reproduction drive the TX
+implementation.

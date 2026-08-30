@@ -1,3 +1,8 @@
 node_modules/
 .homeybuild/
 env.json
+
+# Python and PlatformIO build artifacts
+__pycache__/
+*.py[cod]
+.pio/
