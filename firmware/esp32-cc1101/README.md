@@ -36,6 +36,16 @@ every 2-FSK candidate and none at all for OOK, so this firmware now uses:
 
 Use `+`/`-` to trim the centre without reflashing if frames decode partially.
 
+`DIAG` reports `peak_rssi`, the strongest reading seen during the whole two-second
+window, not a single instantaneous sample. A remote burst lasts only tens of
+milliseconds, so a once-per-report reading would almost always miss it. RSSI
+sampling is skipped while a pulse train is active, so SPI traffic cannot disturb
+the capture.
+
+While transmitting a few centimetres from the antenna, `peak_rssi` should reach
+roughly -40 dBm. If it never rises above about -100 dBm, the remote did not
+transmit in that window: press for about a second, release, and repeat.
+
 ## Hardware
 
 - ESP32 DevKit / `esp32dev`

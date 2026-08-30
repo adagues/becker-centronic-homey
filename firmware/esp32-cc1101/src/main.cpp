@@ -166,7 +166,8 @@ static bool cc1101Init() {
     return false;
   }
 
-  Serial.println("CC1101 ready: 868.283 MHz 2-FSK, async data on GDO2/GPIO4");
+  Serial.printf("CC1101 ready: %.6f MHz 2-FSK, async data on GDO2/GPIO4\n",
+                centreFrequencyHz / 1e6);
   return true;
 }
 
@@ -421,6 +422,24 @@ static void handleSerialCommand() {
   }
 }
 
+// A remote burst lasts only tens of milliseconds, so reading RSSI once per
+// report almost always misses it. Track the peak continuously instead, and skip
+// sampling while a pulse train is active so SPI traffic cannot disturb it.
+static int rssiPeakDbm = -127;
+
+static void trackRssiPeak() {
+  static uint32_t lastSampleMs = 0;
+  const uint32_t now = millis();
+  if (now - lastSampleMs < 10) return;
+  if (micros() - lastEdgeUs < 5000) return;
+  lastSampleMs = now;
+
+  uint8_t rawRssi = 0;
+  if (!readStatusReg(REG_RSSI, rawRssi)) return;
+  const int dbm = static_cast<int8_t>(rawRssi) / 2 - 74;
+  if (dbm > rssiPeakDbm) rssiPeakDbm = dbm;
+}
+
 static void printRadioDiagnostic() {
   static uint32_t lastReportMs = 0;
   static uint32_t previousEdgeCount = 0;
@@ -433,18 +452,17 @@ static void printRadioDiagnostic() {
   edges = totalEdgeCount;
   portEXIT_CRITICAL(&pulseMux);
 
-  uint8_t rawRssi = 0;
   uint8_t marcState = 0;
   uint8_t packetStatus = 0;
-  if (!readStatusReg(REG_RSSI, rawRssi) ||
-      !readStatusReg(REG_MARCSTATE, marcState) ||
+  if (!readStatusReg(REG_MARCSTATE, marcState) ||
       !readStatusReg(REG_PKTSTATUS, packetStatus)) {
     Serial.println("DIAG SPI read failed");
     return;
   }
 
-  const int rssiDbm = static_cast<int8_t>(rawRssi) / 2 - 74;
-  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X rssi=%ddBm pkt=0x%02X mc=%lu reject=%lu drop=%lu glitches=%lu\n",
+  const int rssiDbm = rssiPeakDbm;
+  rssiPeakDbm = -127;
+  Serial.printf("DIAG edges=%lu delta=%lu/2s gdo2=%d marc=0x%02X peak_rssi=%ddBm pkt=0x%02X mc=%lu reject=%lu drop=%lu glitches=%lu\n",
                 static_cast<unsigned long>(edges),
                 static_cast<unsigned long>(edges - previousEdgeCount),
                 digitalRead(PIN_GDO2), marcState & 0x1F, rssiDbm, packetStatus,
@@ -531,6 +549,7 @@ void loop() {
   if (cc1101Present) {
     maintainReceiveMode();
     pollPulseCapture();
+    trackRssiPeak();
     printRadioDiagnostic();
   }
   delay(1);
