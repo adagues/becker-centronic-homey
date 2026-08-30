@@ -7,7 +7,7 @@ The Becker/SIGNALduino register set uses the CC1101 **asynchronous serial
 mode**. Receive data is exposed on **GDO2** and is not available through the RX
 FIFO. This firmware records GDO2 edge timings and decodes Manchester frames.
 
-## Measured centre frequency: 868.350 MHz
+## Measured centre frequency: 868.325 MHz
 
 The published Becker profile uses 868.282806 MHz, but a scanner sweep of this
 remote (`firmware/esp32-cc1101-scanner`, idle-vs-press comparison) put the
@@ -17,9 +17,21 @@ anywhere. At 868.283 MHz both FSK tones therefore sat on the same side of the
 discriminator, GDO2 stayed static and nothing could be decoded.
 
 A probe pass at 868.350 MHz then produced thousands of Becker-range pulses for
-every 2-FSK candidate and none at all for OOK, so this firmware now uses:
+every 2-FSK candidate and none at all for OOK, which fixes the modulation.
 
-- centre 868.349854 MHz (`FREQ2/1/0 = 0x21 0x65 0xE8`)
+Capturing at 868.350 MHz, however, produced a heavily asymmetric spike train:
+high pulses of one 417 us unit separated by low gaps of 3, 5, 7, 9 or 15 units,
+with a 1249 us high marker recurring every frame. That is what a discriminator
+sitting **on** the upper FSK tone looks like. The two measured peaks are 50 kHz
+apart, so the centre is their midpoint and the deviation is about 25 kHz —
+matching the published Becker profile in everything but frequency.
+
+Every observed duration is an integer multiple of about 417 us, and the
+published Becker symbol clock is 414 us, which confirms this is the right signal.
+
+This firmware therefore uses:
+
+- centre 868.324860 MHz (`FREQ2/1/0 = 0x21 0x65 0xA9`)
 - 2-FSK, deviation 25.4 kHz, no sync-word gating (`MDMCFG2 = 0x00`)
 - 203 kHz receive filter, 2399 baud (`MDMCFG4 = 0x86`, `MDMCFG3 = 0x83`)
 - `MCSM1 = 0x00`, matching the proven SIGNALduino profile
@@ -31,6 +43,8 @@ every 2-FSK candidate and none at all for OOK, so this firmware now uses:
 |-----|--------|
 | `+` | retune 10 kHz up |
 | `-` | retune 10 kHz down |
+| `>` | retune 2 kHz up |
+| `<` | retune 2 kHz down |
 | `i` | print current frequency and counters |
 | `r` | re-arm the receive path |
 | `d` | dump registers 0x00-0x2E plus MARCSTATE and RSSI |
@@ -64,6 +78,16 @@ stops below -78 dBm, and each recorded burst is printed raw:
 BURST rssi=-41dBm n=140 d=+443,-390,+844,-809,...
 HIST 300-399:12 400-499:96 800-899:31
 ```
+
+`SYM` tallies the same pulses quantised to 417 us units, split by level:
+
+```
+SYM high 1:190 3:12 | low 1:8 2:150 3:40
+```
+
+This is the decisive readout. Correctly demodulated 2-FSK data is dominated by
+1 and 2 unit runs on **both** levels. One-unit highs against long multi-unit
+lows mean the receiver is still off-centre — trim with `<` and `>`.
 
 `BURST` uses the SIGNALduino convention, positive while high and negative while
 low, so the line can be decoded offline. `HIST` bins pulse widths by 100 us: a

@@ -61,9 +61,12 @@ static const uint32_t CHIP_READY_TIMEOUT_US = 20000;
 static const uint8_t BECKER_REGS[][2] = {
   {0x00, 0x0D}, {0x01, 0x2E}, {0x02, 0x2D}, {0x03, 0x47}, {0x04, 0xD3},
   {0x05, 0x91}, {0x06, 0x3D}, {0x07, 0x04}, {0x08, 0x32}, {0x09, 0x00},
-  // FREQ2/1/0 = 0x2165E8 -> 868.349854 MHz
+  // FREQ2/1/0 = 0x2165A9 -> 868.324860 MHz, the midpoint of the two measured
+  // peaks (868.300 and 868.350) so the FSK discriminator swings symmetrically.
+  // Sitting on 868.350 put the receiver on the upper tone and produced a
+  // heavily asymmetric spike train instead of balanced data.
   {0x0A, 0x00}, {0x0B, 0x06}, {0x0C, 0x00}, {0x0D, 0x21}, {0x0E, 0x65},
-  {0x0F, 0xE8},
+  {0x0F, 0xA9},
   // MDMCFG4=0x86 -> 203 kHz RX filter, MDMCFG3=0x83 -> 2399 baud,
   // MDMCFG2=0x00 -> 2-FSK with no sync-word gating, DEVIATN=0x40 -> 25.4 kHz.
   {0x10, 0x86}, {0x11, 0x83}, {0x12, 0x00}, {0x13, 0x23},
@@ -78,7 +81,7 @@ static const uint8_t BECKER_REGS[][2] = {
 
 // Runtime retune, so the exact centre can be trimmed without reflashing.
 static const double CRYSTAL_HZ = 26000000.0;
-static double centreFrequencyHz = 868349854.0;
+static double centreFrequencyHz = 868324860.0;
 
 static bool cc1101Present = false;
 static uint8_t cc1101Partnum = 0xFF;
@@ -317,6 +320,7 @@ static const int BURST_START_DBM = -70;
 static const int BURST_STOP_DBM = -78;
 static const size_t MAX_BURST_PULSES = 400;
 static const size_t MIN_BURST_PULSES = 32;
+static const uint16_t SYMBOL_UNIT_US = 417;
 
 static uint16_t burstDurations[MAX_BURST_PULSES];
 static uint8_t burstLevels[MAX_BURST_PULSES];
@@ -357,6 +361,32 @@ static void printBurst() {
     if (index > 15) index = 15;
     bins[index]++;
   }
+  // Every observed duration is an integer multiple of about 417 us, which is
+  // also the published Becker clock (414 us). Tally by unit so the balance
+  // between high and low symbols is readable at a glance: real 2-FSK data
+  // should be dominated by 1 and 2 unit runs on BOTH levels, while a
+  // mistuned discriminator yields 1 unit highs and long multi-unit lows.
+  uint16_t highUnits[17] = {0};
+  uint16_t lowUnits[17] = {0};
+  for (size_t i = 0; i < burstCount; i++) {
+    size_t unit = (burstDurations[i] + SYMBOL_UNIT_US / 2) / SYMBOL_UNIT_US;
+    if (unit > 16) unit = 16;
+    if (burstLevels[i] == HIGH) {
+      highUnits[unit]++;
+    } else {
+      lowUnits[unit]++;
+    }
+  }
+  Serial.print(F("SYM high"));
+  for (size_t i = 0; i <= 16; i++) {
+    if (highUnits[i]) Serial.printf(" %u:%u", static_cast<unsigned>(i), highUnits[i]);
+  }
+  Serial.print(F(" | low"));
+  for (size_t i = 0; i <= 16; i++) {
+    if (lowUnits[i]) Serial.printf(" %u:%u", static_cast<unsigned>(i), lowUnits[i]);
+  }
+  Serial.println();
+
   Serial.print(F("HIST"));
   for (size_t i = 0; i < 16; i++) {
     if (bins[i] == 0) continue;
@@ -503,6 +533,14 @@ static void handleSerialCommand() {
         break;
       case '-':
         centreFrequencyHz -= 10000.0;
+        applyCentreFrequency();
+        break;
+      case '>':
+        centreFrequencyHz += 2000.0;
+        applyCentreFrequency();
+        break;
+      case '<':
+        centreFrequencyHz -= 2000.0;
         applyCentreFrequency();
         break;
       case 'i':
@@ -678,7 +716,8 @@ void setup() {
   }
 
   startWifi();
-  Serial.printf("Ready at %.6f MHz. Commands: +/- retune 10 kHz, i=info, r=rearm\n",
+  Serial.printf("Ready at %.6f MHz. Commands: +/- 10 kHz, </> 2 kHz, i=info, "
+                "d=regs, r=rearm\n",
                 centreFrequencyHz / 1e6);
   Serial.println("DIAG reports every 2s; press a Becker remote button.");
 }
