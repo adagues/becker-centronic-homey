@@ -241,3 +241,60 @@ construction.
 The register set comes from
 [centronic-py TECHNICAL.md](https://github.com/ole1986/centronic-py/blob/master/TECHNICAL.md)
 and its FHEM/SIGNALduino Becker configuration.
+
+## Results: real frames captured (2026-08-30)
+
+The capture chain works. Frames decode cleanly and repeatedly:
+
+```
+MC bits=65 c=416 pulses=94 halfbits=130 glitches=0 hex=68324BE64D4821690
+MC bits=65 c=417 pulses=104 halfbits=130 glitches=0 hex=3AD118F21DFDE7DF0
+```
+
+- 65 bits at a 416 us clock, against 66 bits at 414 us in the published Becker
+  reference capture (FHEM forum topic 110043,
+  `MC;LL=-809;LH=844;SL=-390;SH=443;D=CA5E62DB2542C1DB8;C=414;L=66`)
+- `glitches=0`, and each payload repeats 3 to 5 times per press, which is how
+  these remotes transmit — this is a stable decode, not noise
+- the frame is preceded by three long pulses of about 1.7 ms, and repeats within
+  one press are separated by a single 1.7 ms pulse
+
+### Every press sends a completely different payload
+
+Eight presses produced eight unrelated payloads:
+
+```
+68324BE64D4821690   3AD118F21DFDE7DF0
+7E2359553984D3C0    32EED09DADB25FF3
+563DA940518E6BE6    4BE0EEAB6B39AF1A
+24FC7459922342AF    13C7E68423609F0C
+```
+
+Longest common substring between any two payloads is 13-16 bits out of 64, and
+18-26 half-bits out of 130 — both at the level expected by chance for unrelated
+strings. There is **no fixed field**: no serial number, no channel, no constant
+prefix survives between presses.
+
+### What that means
+
+The frame length matches KeeLoq's 66-bit transmission format, of which 32 bits
+are encrypted. The absence of any fixed field confirms a rolling code, so:
+
+- capture and decode: solved
+- replay or synthesis of a valid command: **not possible** without the 64-bit
+  manufacturer key, which lives inside the remote's PIC16F636 and cannot be read
+  out. Brute forcing 2^64 is not an option.
+
+Two caveats, stated honestly. Two of the four analysed frames returned an odd
+half-bit count (129), which means a half-bit was lost; in Manchester that flips
+the pairing phase for the rest of the frame and randomises everything after it.
+So part of the difference between payloads may be decode error rather than real
+payload change. Cleaner captures would settle it — but they would not change the
+conclusion above, because a correct decode still yields no key.
+
+### Consequence for the Homey goal
+
+Sniffing cannot deliver control of these shutters. The remaining viable route is
+the fallback already identified: drive the existing remote's buttons physically
+from an ESP32 (opto-isolated or transistor across each button), which sidesteps
+the cryptography entirely and uses the remote as its own authorised transmitter.
