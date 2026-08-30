@@ -123,6 +123,15 @@ static bool readStatusReg(uint8_t address, uint8_t& value) {
   return spiTransfer(address | 0xC0, 0x00, value);
 }
 
+// Configuration registers (0x00-0x2E) need the single-read bit, not the burst
+// bit used for status registers.
+static bool readConfigReg(uint8_t address, uint8_t& value) {
+  return spiTransfer(address | 0x80, 0x00, value);
+}
+
+// Defined below, next to the capture buffers it resets.
+static bool enterReceiveMode(bool verbose);
+
 static bool cc1101Init() {
   pinMode(PIN_CS, OUTPUT);
   digitalWrite(PIN_CS, HIGH);
@@ -161,7 +170,7 @@ static bool cc1101Init() {
       return false;
     }
   }
-  if (!strobe(STROBE_SRX)) {
+  if (!enterReceiveMode(true)) {
     Serial.println("CC1101 ERROR: unable to enter receive mode");
     return false;
   }
@@ -325,7 +334,7 @@ static void pollPulseCapture() {
   }
 }
 
-static bool waitForMarcState(uint8_t expectedState, uint32_t timeoutUs = 20000) {
+static bool waitForMarcState(uint8_t expectedState, uint32_t timeoutUs = 50000) {
   const uint32_t started = micros();
   do {
     uint8_t marcState = 0;
@@ -338,12 +347,32 @@ static bool waitForMarcState(uint8_t expectedState, uint32_t timeoutUs = 20000) 
   return false;
 }
 
-static bool recoverReceiveMode() {
-  // SFRX is only legal in IDLE. Wait for each MARC transition instead of
-  // issuing three strobes back-to-back while the radio is still in RX_RST.
-  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01)) return false;
-  if (!strobe(STROBE_SFRX)) return false;
-  if (!strobe(STROBE_SRX) || !waitForMarcState(0x0D)) return false;
+// Same sequence the scanner firmware uses, since that one demonstrably reached
+// MARCSTATE 0x0D and produced Becker-range pulses at 868.350 MHz. Failures are
+// printed instead of being swallowed, which previously hid a radio stuck in
+// RX_RST (0x0F) for a whole session.
+static bool enterReceiveMode(bool verbose) {
+  uint8_t marcState = 0xFF;
+  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01, 50000)) {
+    readStatusReg(REG_MARCSTATE, marcState);
+    if (verbose) {
+      Serial.printf("RX ERROR: IDLE not reached (marc=0x%02X)\n",
+                    marcState & 0x1F);
+    }
+    return false;
+  }
+  if (!strobe(STROBE_SFRX)) {
+    if (verbose) Serial.println(F("RX ERROR: SFRX strobe failed"));
+    return false;
+  }
+  if (!strobe(STROBE_SRX) || !waitForMarcState(0x0D, 50000)) {
+    readStatusReg(REG_MARCSTATE, marcState);
+    if (verbose) {
+      Serial.printf("RX ERROR: RX not reached (marc=0x%02X)\n",
+                    marcState & 0x1F);
+    }
+    return false;
+  }
 
   portENTER_CRITICAL(&pulseMux);
   pulseCount = 0;
@@ -354,21 +383,23 @@ static bool recoverReceiveMode() {
   return true;
 }
 
+static bool recoverReceiveMode() { return enterReceiveMode(true); }
+
 static bool applyCentreFrequency() {
   const uint32_t word =
       static_cast<uint32_t>((centreFrequencyHz / CRYSTAL_HZ) * 65536.0 + 0.5);
-  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01)) return false;
+  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01)) {
+    Serial.println(F("FREQ ERROR: radio would not go idle"));
+    return false;
+  }
   if (!writeReg(0x0D, (word >> 16) & 0xFF)) return false;
   if (!writeReg(0x0E, (word >> 8) & 0xFF)) return false;
   if (!writeReg(0x0F, word & 0xFF)) return false;
-  if (!strobe(STROBE_SRX) || !waitForMarcState(0x0D)) return false;
-
-  portENTER_CRITICAL(&pulseMux);
-  pulseCount = 0;
-  pulseOverflow = false;
-  lastEdgeUs = micros();
-  portEXIT_CRITICAL(&pulseMux);
-  manchesterDetector.reset();
+  if (!enterReceiveMode(true)) {
+    Serial.printf("FREQ ERROR: %.6f MHz not applied\n",
+                  centreFrequencyHz / 1e6);
+    return false;
+  }
   Serial.printf("FREQ set to %.6f MHz\n", centreFrequencyHz / 1e6);
   return true;
 }
@@ -385,11 +416,16 @@ static void maintainReceiveMode() {
   uint8_t marcState = 0;
   if (!readStatusReg(REG_MARCSTATE, marcState)) return;
   const uint8_t state = marcState & 0x1F;
-  if (state == 0x01) {
-    strobe(STROBE_SRX);
-  } else if (state != 0x0D) {
-    recoverReceiveMode();
+  static uint8_t consecutiveBadStates = 0;
+  if (state == 0x0D) {
+    consecutiveBadStates = 0;
+    return;
   }
+  // One transient reading is normal during calibration; act on the second.
+  if (++consecutiveBadStates < 2) return;
+  consecutiveBadStates = 0;
+  Serial.printf("RX recovery: marc=0x%02X\n", state);
+  enterReceiveMode(true);
 }
 
 static void handleSerialCommand() {
@@ -416,6 +452,26 @@ static void handleSerialCommand() {
         recoverReceiveMode();
         Serial.println(F("receive path re-armed"));
         break;
+      case 'd': {
+        Serial.print(F("REGS"));
+        for (uint8_t address = 0x00; address <= 0x2E; address++) {
+          uint8_t value = 0;
+          if (!readConfigReg(address, value)) {
+            Serial.print(F(" read-failed"));
+            break;
+          }
+          Serial.printf(" %02X", value);
+        }
+        Serial.println();
+        uint8_t marcState = 0;
+        uint8_t rawRssi = 0;
+        if (readStatusReg(REG_MARCSTATE, marcState) &&
+            readStatusReg(REG_RSSI, rawRssi)) {
+          Serial.printf("STATE marc=0x%02X rssi=%ddBm\n", marcState & 0x1F,
+                        static_cast<int8_t>(rawRssi) / 2 - 74);
+        }
+        break;
+      }
       default:
         break;
     }

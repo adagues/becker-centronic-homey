@@ -33,6 +33,7 @@ every 2-FSK candidate and none at all for OOK, so this firmware now uses:
 | `-` | retune 10 kHz down |
 | `i` | print current frequency and counters |
 | `r` | re-arm the receive path |
+| `d` | dump registers 0x00-0x2E plus MARCSTATE and RSSI |
 
 Use `+`/`-` to trim the centre without reflashing if frames decode partially.
 
@@ -41,6 +42,14 @@ window, not a single instantaneous sample. A remote burst lasts only tens of
 milliseconds, so a once-per-report reading would almost always miss it. RSSI
 sampling is skipped while a pulse train is active, so SPI traffic cannot disturb
 the capture.
+
+Entering receive now uses the same sequence as the scanner firmware and prints
+`RX ERROR: ...` with the observed `MARCSTATE` when it fails, instead of leaving
+the radio silently stuck in `RX_RST` (0x0F). Recovery is only triggered after two
+consecutive non-RX readings and announces itself as `RX recovery: marc=0x..`.
+
+Use `d` to compare the loaded registers against the scanner: the frequency bytes
+must read `21 65 E8`, `IOCFG2` must be `0D` and `PKTCTRL0` must be `32`.
 
 While transmitting a few centimetres from the antenna, `peak_rssi` should reach
 roughly -40 dBm. If it never rises above about -100 dBm, the remote did not
