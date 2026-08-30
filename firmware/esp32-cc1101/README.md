@@ -5,8 +5,36 @@ an ESP32 and an 868 MHz CC1101 module.
 
 The Becker/SIGNALduino register set uses the CC1101 **asynchronous serial
 mode**. Receive data is exposed on **GDO2** and is not available through the RX
-FIFO. This firmware records GDO2 edge timings and prints SIGNALduino-style
-signed pulse durations for later Manchester decoding.
+FIFO. This firmware records GDO2 edge timings and decodes Manchester frames.
+
+## Measured centre frequency: 868.350 MHz
+
+The published Becker profile uses 868.282806 MHz, but a scanner sweep of this
+remote (`firmware/esp32-cc1101-scanner`, idle-vs-press comparison) put the
+carrier 40-65 kHz higher: idle floor -108 dBm everywhere, and while transmitting
+868.300/868.350 MHz rose to -45/-44 dBm, a 64 dB delta with no permanent carrier
+anywhere. At 868.283 MHz both FSK tones therefore sat on the same side of the
+discriminator, GDO2 stayed static and nothing could be decoded.
+
+A probe pass at 868.350 MHz then produced thousands of Becker-range pulses for
+every 2-FSK candidate and none at all for OOK, so this firmware now uses:
+
+- centre 868.349854 MHz (`FREQ2/1/0 = 0x21 0x65 0xE8`)
+- 2-FSK, deviation 25.4 kHz, no sync-word gating (`MDMCFG2 = 0x00`)
+- 203 kHz receive filter, 2399 baud (`MDMCFG4 = 0x86`, `MDMCFG3 = 0x83`)
+- `MCSM1 = 0x00`, matching the proven SIGNALduino profile
+- no RX FIFO polling during capture
+
+## Serial commands
+
+| Key | Effect |
+|-----|--------|
+| `+` | retune 10 kHz up |
+| `-` | retune 10 kHz down |
+| `i` | print current frequency and counters |
+| `r` | re-arm the receive path |
+
+Use `+`/`-` to trim the centre without reflashing if frames decode partially.
 
 ## Hardware
 

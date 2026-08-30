@@ -47,25 +47,38 @@ static const uint8_t REG_VERSION = 0x31;
 static const uint8_t REG_RSSI = 0x34;
 static const uint8_t REG_MARCSTATE = 0x35;
 static const uint8_t REG_PKTSTATUS = 0x38;
-static const uint8_t REG_RXBYTES = 0x3B;
-static const uint8_t REG_FIFO = 0x3F;
 static const uint32_t CHIP_READY_TIMEOUT_US = 20000;
 
 // Becker Centronic register set from centronic-py / FHEM SIGNALduino:
 // 2-FSK at 868.283 MHz, asynchronous serial output on GDO2.
+// Measured on Alexis' remote (scanner idle-vs-press sweep, 2026-08-30):
+// the carrier is NOT at the published 868.282806 MHz but about 40-65 kHz above,
+// peaking at 868.300/868.350 MHz with a 64 dB rise while transmitting. With the
+// centre set to 868.283 both FSK tones landed on the same side of the
+// discriminator, so GDO2 stayed static and nothing could be decoded.
+// The probe pass then showed 2-FSK produces thousands of Becker-range pulses at
+// 868.350 MHz while OOK produces none, which fixes both frequency and modulation.
 static const uint8_t BECKER_REGS[][2] = {
   {0x00, 0x0D}, {0x01, 0x2E}, {0x02, 0x2D}, {0x03, 0x47}, {0x04, 0xD3},
   {0x05, 0x91}, {0x06, 0x3D}, {0x07, 0x04}, {0x08, 0x32}, {0x09, 0x00},
+  // FREQ2/1/0 = 0x2165E8 -> 868.349854 MHz
   {0x0A, 0x00}, {0x0B, 0x06}, {0x0C, 0x00}, {0x0D, 0x21}, {0x0E, 0x65},
-  {0x0F, 0x3F}, {0x10, 0x57}, {0x11, 0xC4}, {0x12, 0x06}, {0x13, 0x23},
-  // MCSM1=0x0C keeps RX active after a detected packet instead of IDLE.
-  {0x14, 0xB9}, {0x15, 0x40}, {0x16, 0x07}, {0x17, 0x0C}, {0x18, 0x18},
-  {0x19, 0x14}, {0x1A, 0x6C}, {0x1B, 0x00}, {0x1C, 0x00}, {0x1D, 0x92},
+  {0x0F, 0xE8},
+  // MDMCFG4=0x86 -> 203 kHz RX filter, MDMCFG3=0x83 -> 2399 baud,
+  // MDMCFG2=0x00 -> 2-FSK with no sync-word gating, DEVIATN=0x40 -> 25.4 kHz.
+  {0x10, 0x86}, {0x11, 0x83}, {0x12, 0x00}, {0x13, 0x23},
+  // MCSM1=0x00 as in the proven SIGNALduino profile.
+  {0x14, 0xB9}, {0x15, 0x40}, {0x16, 0x07}, {0x17, 0x00}, {0x18, 0x18},
+  {0x19, 0x14}, {0x1A, 0x6C}, {0x1B, 0x07}, {0x1C, 0x00}, {0x1D, 0x91},
   {0x1E, 0x87}, {0x1F, 0x6B}, {0x20, 0xF8}, {0x21, 0xB6}, {0x22, 0x11},
-  {0x23, 0xEF}, {0x24, 0x2B}, {0x25, 0x14}, {0x26, 0x1F}, {0x27, 0x41},
+  {0x23, 0xE9}, {0x24, 0x2A}, {0x25, 0x00}, {0x26, 0x1F}, {0x27, 0x41},
   {0x28, 0x00}, {0x29, 0x59}, {0x2A, 0x7F}, {0x2B, 0x07}, {0x2C, 0x88},
   {0x2D, 0x31}, {0x2E, 0x0B},
 };
+
+// Runtime retune, so the exact centre can be trimmed without reflashing.
+static const double CRYSTAL_HZ = 26000000.0;
+static double centreFrequencyHz = 868349854.0;
 
 static bool cc1101Present = false;
 static uint8_t cc1101Partnum = 0xFF;
@@ -340,43 +353,71 @@ static bool recoverReceiveMode() {
   return true;
 }
 
+static bool applyCentreFrequency() {
+  const uint32_t word =
+      static_cast<uint32_t>((centreFrequencyHz / CRYSTAL_HZ) * 65536.0 + 0.5);
+  if (!strobe(STROBE_SIDLE) || !waitForMarcState(0x01)) return false;
+  if (!writeReg(0x0D, (word >> 16) & 0xFF)) return false;
+  if (!writeReg(0x0E, (word >> 8) & 0xFF)) return false;
+  if (!writeReg(0x0F, word & 0xFF)) return false;
+  if (!strobe(STROBE_SRX) || !waitForMarcState(0x0D)) return false;
+
+  portENTER_CRITICAL(&pulseMux);
+  pulseCount = 0;
+  pulseOverflow = false;
+  lastEdgeUs = micros();
+  portEXIT_CRITICAL(&pulseMux);
+  manchesterDetector.reset();
+  Serial.printf("FREQ set to %.6f MHz\n", centreFrequencyHz / 1e6);
+  return true;
+}
+
 static void maintainReceiveMode() {
-  static uint32_t lastFifoServiceUs = 0;
+  // The RF review asked for no SPI traffic during capture beyond a rare state
+  // check: in asynchronous serial mode the RX FIFO is unused, so draining it
+  // only added noise and state-machine churn.
   static uint32_t lastStateCheckMs = 0;
-  const uint32_t nowUs = micros();
-
-  // The SIGNALduino async configuration still accumulates bytes in RXFIFO.
-  // Discard them: GDO2 edge timings are the capture source. Without this
-  // service the radio reaches MARCSTATE 0x11 and GDO2 stops after one edge.
-  if (nowUs - lastFifoServiceUs >= 5000) {
-    lastFifoServiceUs = nowUs;
-    uint8_t rxBytes = 0;
-    if (readStatusReg(REG_RXBYTES, rxBytes)) {
-      if ((rxBytes & 0x80) != 0) {
-        recoverReceiveMode();
-        return;
-      }
-
-      uint8_t available = rxBytes & 0x7F;
-      if (available > 64) available = 64;
-      while (available-- > 0) {
-        uint8_t discarded = 0;
-        if (!spiTransfer(REG_FIFO | 0xC0, 0x00, discarded)) break;
-      }
-    }
-  }
-
   const uint32_t nowMs = millis();
-  if (nowMs - lastStateCheckMs < 500) return;
+  if (nowMs - lastStateCheckMs < 2000) return;
   lastStateCheckMs = nowMs;
 
   uint8_t marcState = 0;
   if (!readStatusReg(REG_MARCSTATE, marcState)) return;
   const uint8_t state = marcState & 0x1F;
-  if (state == 0x01) { // IDLE: no FIFO flush needed
+  if (state == 0x01) {
     strobe(STROBE_SRX);
-  } else if (state != 0x0D) { // Any state stuck outside RX, including 0x0F/0x11
+  } else if (state != 0x0D) {
     recoverReceiveMode();
+  }
+}
+
+static void handleSerialCommand() {
+  while (Serial.available() > 0) {
+    switch (static_cast<char>(Serial.read())) {
+      case '+':
+        centreFrequencyHz += 10000.0;
+        applyCentreFrequency();
+        break;
+      case '-':
+        centreFrequencyHz -= 10000.0;
+        applyCentreFrequency();
+        break;
+      case 'i':
+        Serial.printf("INFO f=%.6f MHz mc=%lu reject=%lu drop=%lu glitches=%lu\n",
+                      centreFrequencyHz / 1e6,
+                      static_cast<unsigned long>(manchesterDetected),
+                      static_cast<unsigned long>(manchesterRejected),
+                      static_cast<unsigned long>(captureOverflows),
+                      static_cast<unsigned long>(
+                          manchesterDetector.mergedGlitchCount()));
+        break;
+      case 'r':
+        recoverReceiveMode();
+        Serial.println(F("receive path re-armed"));
+        break;
+      default:
+        break;
+    }
   }
 }
 
@@ -479,10 +520,13 @@ void setup() {
   }
 
   startWifi();
-  Serial.println("Ready. DIAG reports every 2s; press a Becker remote button.");
+  Serial.printf("Ready at %.6f MHz. Commands: +/- retune 10 kHz, i=info, r=rearm\n",
+                centreFrequencyHz / 1e6);
+  Serial.println("DIAG reports every 2s; press a Becker remote button.");
 }
 
 void loop() {
+  handleSerialCommand();
   if (wifiConnected) server.handleClient();
   if (cc1101Present) {
     maintainReceiveMode();
