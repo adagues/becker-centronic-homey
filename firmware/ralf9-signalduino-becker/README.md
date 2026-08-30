@@ -41,10 +41,19 @@ configuration and enforces radio B, bank 0, `ccmode=0`, RX and Manchester
 decoding. EEPROM is rewritten only when a value differs, so flash is not
 rewritten on every boot.
 
-This matters: a never-initialised EEPROM leaves decoder limits at `0xFF`. In
-particular `maxnumpat=255` overflows the fixed 16-entry pattern arrays, which
-crashes and reboots the ESP32 in a loop right after `rxB=1`. The value is also
-clamped defensively at load time.
+This matters twice over:
+
+1. A never-initialised EEPROM leaves decoder limits at `0xFF`. In particular
+   `maxnumpat=255` overflows the fixed 16-entry pattern arrays. The value is
+   also clamped defensively at load time.
+2. Upstream pins the old ESP32 core, where AVR-style `cli()`/`sei()` inside the
+   GPIO ISR were harmless. On a modern core they map to
+   `portDISABLE_INTERRUPTS()`/`portENABLE_INTERRUPTS()`, which must not be
+   called from ISR context and reboot the chip as soon as GDO2 produces edges.
+   They are compiled out in this control build; the ISR only pushes a single
+   16-bit value into a single-producer FIFO.
+
+Both faults appeared as a fast reboot loop right after `rxB=1`.
 
 - 868.282806 MHz
 - 2-FSK

@@ -39,6 +39,18 @@
 #include "compile_config.h"
 #include <Arduino.h>
 
+#ifdef RALF9_BECKER_PROFILE
+// Ralf9 pins the old ESP32 core, where AVR-style cli()/sei() were harmless.
+// On this modern core they map to portDISABLE_INTERRUPTS()/portENABLE_INTERRUPTS(),
+// which must not be called from the GPIO ISR: doing so reboots the chip in a
+// loop as soon as GDO2 produces edges. The ISR only pushes one 16-bit value
+// into a single-producer FIFO, so it is safe without them.
+#undef cli
+#undef sei
+#define cli() do {} while (0)
+#define sei() do {} while (0)
+#endif
+
 #define PROGNAME               " SIGNALduinoAdv "
 #define PROGVERS               "4.2.2-dev220712"
 #define VERSION_1               0x41
