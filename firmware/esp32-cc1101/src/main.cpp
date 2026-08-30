@@ -308,6 +308,71 @@ static void handleManchesterEvent(becker::ManchesterEvent event,
   storeFrame(frame);
 }
 
+// ---------- RSSI-gated raw burst recording ----------
+// The receiver produces a continuous noise stream (about 3000 edges/s) with no
+// idle gaps, so pulses cannot be segmented by silence. Gate on signal strength
+// instead: record only while a real transmission is present, then print the raw
+// pulse train for offline decoding.
+static const int BURST_START_DBM = -70;
+static const int BURST_STOP_DBM = -78;
+static const size_t MAX_BURST_PULSES = 400;
+static const size_t MIN_BURST_PULSES = 32;
+
+static uint16_t burstDurations[MAX_BURST_PULSES];
+static uint8_t burstLevels[MAX_BURST_PULSES];
+static size_t burstCount = 0;
+static bool burstRecording = false;
+static int burstPeakDbm = -127;
+static uint32_t burstsPrinted = 0;
+
+static void recordBurstPulse(uint16_t duration, uint8_t level) {
+  if (!burstRecording || burstCount >= MAX_BURST_PULSES) return;
+  burstDurations[burstCount] = duration;
+  burstLevels[burstCount] = level;
+  burstCount++;
+}
+
+static void printBurst() {
+  if (burstCount < MIN_BURST_PULSES) {
+    burstCount = 0;
+    return;
+  }
+
+  // SIGNALduino convention: positive while high, negative while low.
+  Serial.printf("BURST rssi=%ddBm n=%u d=", burstPeakDbm,
+                static_cast<unsigned>(burstCount));
+  for (size_t i = 0; i < burstCount; i++) {
+    const int32_t value = burstLevels[i] == HIGH
+                              ? static_cast<int32_t>(burstDurations[i])
+                              : -static_cast<int32_t>(burstDurations[i]);
+    Serial.printf("%s%ld", i == 0 ? "" : ",", static_cast<long>(value));
+  }
+  Serial.println();
+
+  // 100 us bins expose the symbol clock: Becker Manchester should peak near
+  // 400-500 us with a second peak near 800-900 us.
+  uint16_t bins[16] = {0};
+  for (size_t i = 0; i < burstCount; i++) {
+    size_t index = burstDurations[i] / 100;
+    if (index > 15) index = 15;
+    bins[index]++;
+  }
+  Serial.print(F("HIST"));
+  for (size_t i = 0; i < 16; i++) {
+    if (bins[i] == 0) continue;
+    if (i == 15) {
+      Serial.printf(" 1500+:%u", bins[i]);
+    } else {
+      Serial.printf(" %u-%u:%u", static_cast<unsigned>(i * 100),
+                    static_cast<unsigned>(i * 100 + 99), bins[i]);
+    }
+  }
+  Serial.println();
+
+  burstsPrinted++;
+  burstCount = 0;
+}
+
 static void pollPulseCapture() {
   static uint16_t durations[MAX_PULSES];
   static uint8_t levels[MAX_PULSES];
@@ -321,6 +386,7 @@ static void pollPulseCapture() {
       manchesterDetector.reset();
     }
     for (size_t i = 0; i < count; i++) {
+      recordBurstPulse(durations[i], levels[i]);
       const becker::ManchesterEvent event =
           manchesterDetector.push(durations[i], levels[i], result);
       handleManchesterEvent(event, result);
@@ -440,8 +506,9 @@ static void handleSerialCommand() {
         applyCentreFrequency();
         break;
       case 'i':
-        Serial.printf("INFO f=%.6f MHz mc=%lu reject=%lu drop=%lu glitches=%lu\n",
+        Serial.printf("INFO f=%.6f MHz bursts=%lu mc=%lu reject=%lu drop=%lu glitches=%lu\n",
                       centreFrequencyHz / 1e6,
+                      static_cast<unsigned long>(burstsPrinted),
                       static_cast<unsigned long>(manchesterDetected),
                       static_cast<unsigned long>(manchesterRejected),
                       static_cast<unsigned long>(captureOverflows),
@@ -487,13 +554,30 @@ static void trackRssiPeak() {
   static uint32_t lastSampleMs = 0;
   const uint32_t now = millis();
   if (now - lastSampleMs < 10) return;
-  if (micros() - lastEdgeUs < 5000) return;
+  // Sampling used to be skipped while pulses were arriving, but the noise floor
+  // never goes quiet, so the sample was almost never taken and the report read
+  // -127 dBm. One two-byte SPI read every 10 ms is cheap enough to always do.
   lastSampleMs = now;
 
   uint8_t rawRssi = 0;
   if (!readStatusReg(REG_RSSI, rawRssi)) return;
   const int dbm = static_cast<int8_t>(rawRssi) / 2 - 74;
   if (dbm > rssiPeakDbm) rssiPeakDbm = dbm;
+
+  if (!burstRecording) {
+    if (dbm >= BURST_START_DBM) {
+      burstRecording = true;
+      burstCount = 0;
+      burstPeakDbm = dbm;
+    }
+    return;
+  }
+
+  if (dbm > burstPeakDbm) burstPeakDbm = dbm;
+  if (dbm <= BURST_STOP_DBM || burstCount >= MAX_BURST_PULSES) {
+    burstRecording = false;
+    printBurst();
+  }
 }
 
 static void printRadioDiagnostic() {

@@ -51,6 +51,25 @@ consecutive non-RX readings and announces itself as `RX recovery: marc=0x..`.
 Use `d` to compare the loaded registers against the scanner: the frequency bytes
 must read `21 65 E8`, `IOCFG2` must be `0D` and `PKTCTRL0` must be `32`.
 
+## RSSI-gated raw capture
+
+With no sync word the receiver outputs a continuous noise stream, roughly 3000
+edges per second, and it never goes quiet — so pulses cannot be separated by
+silence and the Manchester detector never locks (`mc=0` with `reject=0`).
+
+Capture is therefore gated on signal strength: recording starts above -70 dBm,
+stops below -78 dBm, and each recorded burst is printed raw:
+
+```
+BURST rssi=-41dBm n=140 d=+443,-390,+844,-809,...
+HIST 300-399:12 400-499:96 800-899:31
+```
+
+`BURST` uses the SIGNALduino convention, positive while high and negative while
+low, so the line can be decoded offline. `HIST` bins pulse widths by 100 us: a
+genuine Becker frame should peak near 400-500 us with a second peak near
+800-900 us.
+
 While transmitting a few centimetres from the antenna, `peak_rssi` should reach
 roughly -40 dBm. If it never rises above about -100 dBm, the remote did not
 transmit in that window: press for about a second, release, and repeat.
