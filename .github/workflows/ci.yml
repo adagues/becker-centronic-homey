@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLATFORMIO_VERSION: "6.1.19"
+
+jobs:
+  node-protocol:
+    name: Node protocol tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.18.0"
+      - name: Run protocol tests
+        run: npm test
+
+  python-research:
+    name: Python research and corpus tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12.11"
+      - name: Validate and analyze the RF corpus
+        run: python3 research/analyze_captures.py
+      - name: Run research unit tests
+        run: python3 -m unittest discover -s research -p 'test_*.py'
+
+  manchester-host:
+    name: Manchester detector host test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Compile detector test
+        run: >-
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic
+          firmware/esp32-cc1101/test/test_manchester_detector.cpp
+          -o "$RUNNER_TEMP/manchester_detector_test"
+      - name: Run detector test
+        run: "$RUNNER_TEMP/manchester_detector_test"
+
+  platformio-build:
+    name: PlatformIO · ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ESP32 CC1101 capture
+            project: firmware/esp32-cc1101
+            environment: esp32dev
+          - name: ESP32 CC1101 scanner
+            project: firmware/esp32-cc1101-scanner
+            environment: esp32dev
+          - name: Ralf9 SIGNALduino Becker
+            project: firmware/ralf9-signalduino-becker
+            environment: esp32_becker_serial
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12.11"
+      - name: Cache PlatformIO downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.platformio/.cache
+          key: ${{ runner.os }}-platformio-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles(format('{0}/platformio.ini', matrix.project)) }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-${{ env.PLATFORMIO_VERSION }}-
+      - name: Install pinned PlatformIO Core
+        run: python3 -m pip install --disable-pip-version-check "platformio==${PLATFORMIO_VERSION}"
+      - name: Build firmware
+        run: >-
+          pio run
+          --project-dir "${{ matrix.project }}"
+          --environment "${{ matrix.environment }}"
