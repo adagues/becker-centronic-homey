@@ -399,6 +399,32 @@ static void printBurst() {
   }
   Serial.println();
 
+  // Decode the isolated burst. The always-on detector sees the continuous noise
+  // stream and never locks; the same detector fed only a gated burst has a clean
+  // signal to work with, which is what makes decoding possible at all.
+  static becker::ManchesterDetector burstDecoder;
+  becker::ManchesterResult result;
+  burstDecoder.reset();
+  uint16_t decodedFrames = 0;
+  for (size_t i = 0; i < burstCount; i++) {
+    const becker::ManchesterEvent event =
+        burstDecoder.push(burstDurations[i], burstLevels[i], result);
+    if (event == becker::ManchesterEvent::Detected) {
+      handleManchesterEvent(event, result);
+      decodedFrames++;
+    } else if (event == becker::ManchesterEvent::Rejected) {
+      manchesterRejected++;
+    }
+  }
+  const becker::ManchesterEvent tail = burstDecoder.flush(result);
+  if (tail == becker::ManchesterEvent::Detected) {
+    handleManchesterEvent(tail, result);
+    decodedFrames++;
+  } else if (tail == becker::ManchesterEvent::Rejected) {
+    manchesterRejected++;
+  }
+  if (decodedFrames == 0) Serial.println(F("MC none in this burst"));
+
   burstsPrinted++;
   burstCount = 0;
 }

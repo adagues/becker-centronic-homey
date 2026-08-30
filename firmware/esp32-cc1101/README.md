@@ -89,6 +89,16 @@ This is the decisive readout. Correctly demodulated 2-FSK data is dominated by
 1 and 2 unit runs on **both** levels. One-unit highs against long multi-unit
 lows mean the receiver is still off-centre — trim with `<` and `>`.
 
+At 868.325 MHz this remote gives a balanced tally, for example
+`high 1:125 2:62 | low 1:122 2:64`, which is textbook Manchester at a 417 us
+half-bit and matches the published 414 us Becker clock.
+
+Each gated burst is then run through the Manchester detector, which prints
+`MC bits=... c=... hex=... inv=... D=...` per decoded frame, or
+`MC none in this burst`. Decoding the isolated burst is what makes this work:
+the same detector fed the continuous stream never locks, because the receiver
+emits noise without pause and there are no gaps to frame on.
+
 `BURST` uses the SIGNALduino convention, positive while high and negative while
 low, so the line can be decoded offline. `HIST` bins pulse widths by 100 us: a
 genuine Becker frame should peak near 400-500 us with a second peak near
