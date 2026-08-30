@@ -36,9 +36,15 @@ Antenna wire goes to the centre `ANT` hole. The outer antenna holes are ground.
 ## Becker profile
 
 The build always writes the reviewed profile directly, bypassing stale EEPROM
-register banks. At startup it also enforces radio B, bank 0, `ccmode=0`,
-Manchester decoding enabled, and RX enabled. EEPROM is committed only when one
-of these values differs, avoiding unnecessary flash wear:
+register banks. At startup it also verifies the complete Ralf9 default
+configuration and enforces radio B, bank 0, `ccmode=0`, RX and Manchester
+decoding. EEPROM is rewritten only when a value differs, so flash is not
+rewritten on every boot.
+
+This matters: a never-initialised EEPROM leaves decoder limits at `0xFF`. In
+particular `maxnumpat=255` overflows the fixed 16-entry pattern arrays, which
+crashes and reboots the ESP32 in a loop right after `rxB=1`. The value is also
+clamped defensively at load time.
 
 - 868.282806 MHz
 - 2-FSK

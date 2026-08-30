@@ -3342,6 +3342,13 @@ void getCSvar(void)
     }
 
     musterDecB.cMaxNumPattern = tools::EEread(CSetAddr[11]);	// maxnumpat
+  #ifdef RALF9_BECKER_PROFILE
+    // pattern[]/histo[] are fixed at maxNumPattern entries. An out-of-range
+    // value writes past them and reboots the ESP32, so clamp it here too.
+    if (musterDecB.cMaxNumPattern == 0 || musterDecB.cMaxNumPattern > maxNumPattern) {
+       musterDecB.cMaxNumPattern = CSetDef[11];
+    }
+  #endif
     musterDecA.cMaxNumPattern = musterDecB.cMaxNumPattern;
 
     val = tools::EEread(CSetAddr[12]);	// muthreshx256
@@ -3489,25 +3496,39 @@ void initEEPROM(void)
     tools::EEstore();
   }
   #ifdef RALF9_BECKER_PROFILE
-  // Deterministic control build: ignore any stale Ralf9 bank/mode selection.
-  // Commit only when a value differs to avoid unnecessary flash wear.
-  bool profileChanged = false;
-  const uint8_t forcedAddresses[] = {
-    addr_statRadio, addr_statRadio + 1, addr_statRadio + 2,
-    addr_statRadio + 3, addr_selRadio, CSetAddr[CSccmode],
-    CSetAddr[2], addr_featuresA, addr_featuresB, addr_rxRes
-  };
-  const uint8_t forcedValues[] = {
-    defStatRadio, 0, defStatRadio, defStatRadio, defSelRadio, 0,
-    mcMinBitLenDef, 0x37, 0x37, 0xFF
-  };
-  for (uint8_t i = 0; i < sizeof(forcedAddresses); i++) {
-    if (tools::EEread(forcedAddresses[i]) != forcedValues[i]) {
-      tools::EEwrite(forcedAddresses[i], forcedValues[i]);
-      profileChanged = true;
-    }
+  // Deterministic control build. A stale or never-initialised EEPROM leaves the
+  // decoder limits (maxMsgSize, maxNumPattern, ...) at 0xFF, which crashes and
+  // reboots the ESP32 as soon as receive starts. Verify the FULL default set and
+  // rewrite it only when something differs, so flash is not rewritten each boot.
+  bool profileNeedsInit = false;
+  if (tools::EEread(EE_MAGIC_OFFSET) != VERSION_1 ||
+      tools::EEread(EE_MAGIC_OFFSET + 1) != VERSION_2 ||
+      tools::EEread(addr_featuresA) != 0x37 ||
+      tools::EEread(addr_featuresB) != 0x37 ||
+      tools::EEread(addr_statRadio) != defStatRadio ||
+      tools::EEread(addr_statRadio + 1) != 0 ||
+      tools::EEread(addr_statRadio + 2) != defStatRadio ||
+      tools::EEread(addr_statRadio + 3) != defStatRadio ||
+      tools::EEread(addr_selRadio) != defSelRadio ||
+      tools::EEread(addr_rxRes) != 0xFF) {
+    profileNeedsInit = true;
   }
-  if (profileChanged) {
+  for (uint8_t i = 0; i < CSetAnzEE && !profileNeedsInit; i++) {
+    if (tools::EEread(CSetAddr[i]) != CSetDef[i]) profileNeedsInit = true;
+  }
+  // RX-only build, but the PA table is still pushed to the chip on init.
+  const uint8_t forcedPatable[8] = {0, PATABLE_DEFAULT_868, 0, 0, 0, 0, 0, 0};
+  for (uint8_t i = 0; i < 8 && !profileNeedsInit; i++) {
+    if (tools::EEread(EE_CC1101_PA + i) != forcedPatable[i]) profileNeedsInit = true;
+  }
+
+  if (profileNeedsInit) {
+    initEEPROMconfig();
+    for (uint8_t i = 0; i < 8; i++) {
+      tools::EEwrite(EE_CC1101_PA + i, forcedPatable[i]);
+    }
+    tools::EEwrite(EE_MAGIC_OFFSET, VERSION_1);
+    tools::EEwrite(EE_MAGIC_OFFSET + 1, VERSION_2);
     tools::EEstore();
     MSG_PRINTLN(F("Forced Becker control profile: radio B, bank 0, ccmode 0"));
   }
