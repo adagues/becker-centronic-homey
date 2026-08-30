@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "captures": [
+    {
+      "id": "fhem-ole1986-down-unit-1737c-counter-0-channel-1",
+      "source": "https://forum.fhem.de/index.php/topic,110043.msg1040546.html",
+      "logical_frame_hex": "0000000002010B00000000001737C0210101004084",
+      "rf_demodulated_hex": "CA5E62DB2542C1DB8",
+      "rf_valid_bits": 66,
+      "clock_us": 414,
+      "timings_us": {
+        "long_low": -809,
+        "long_high": 844,
+        "short_low": -390,
+        "short_high": 443
+      },
+      "rssi": 202,
+      "known_fields": {
+        "counter": 0,
+        "unit_id_hex": "1737C",
+        "channel": 1,
+        "command": "DOWN",
+        "command_hex": "40"
+      },
+      "notes": "Captured by SIGNALduino from a Becker USB stick configured with chosen counter/unit/channel. D is already Manchester-demodulated. The 17 hex digits contain 68 storage bits but L=66 marks only 66 valid bits, so the two padding-bit alignment is unknown."
+    }
+  ]
+}
