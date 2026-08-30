@@ -1,0 +1,734 @@
+// cc1101.h
+
+#ifndef _CC1101_h
+#define _CC1101_h
+
+//#ifdef defined(ARDUINO) && ARDUINO >= 100
+	#include <Arduino.h>
+//#else
+	//#include "WProgram.h"
+//#endif
+#include "output.h"
+#include "tools.h"
+
+#if defined(MAPLE_Mini) || defined(ESP32)
+	#include <SPI.h>
+#endif
+
+#define ccMaxBuf 64
+extern uint16_t bankOffset;
+extern uint8_t radionr;
+extern String cmdstring;
+extern uint8_t ccBuf[4][ccMaxBuf + 2];
+
+
+namespace cc1101 {
+	
+#ifdef MAPLE_SDUINO
+	#define mosiPin 28   // MOSI out
+	#define misoPin 29   // MISO in
+	#define sckPin  30   // SCLK out
+	SPIClass SPI_2(mosiPin, misoPin, sckPin);
+	const uint8_t radioCsPin[] = {31, 12, 15, 3};
+#elif MAPLE_CUL
+	#define mosiPin 4   // MOSI out
+	#define misoPin 5   // MISO in
+	#define sckPin  6   // SCLK out
+	SPIClass SPI_2(mosiPin, misoPin, sckPin);
+	const uint8_t radioCsPin[] = {7, 12, 15, 3};
+#elif BLACK_BOARD
+	#define mosiPin 4   // MOSI out
+	#define misoPin 5   // MISO in
+	#define sckPin  6   // SCLK out
+	SPIClass SPI_2(mosiPin, misoPin, sckPin);
+	const uint8_t radioCsPin[] = {19, 2, 17, 15}; // (PB3 PB2 PB5 PB7)
+#elif defined(ESP32)
+	#define mosiPin 23   // MOSI out
+	#define misoPin 19   // MISO in
+	#define sckPin  18   // SCLK out
+	#ifdef SIGNALESP32_BECKER
+		// One physical CC1101 on CSN GPIO5; every logical slot maps safely to it.
+		const uint8_t radioCsPin[] = {5, 5, 5, 5};
+	#elif defined(SIGNALESP32)
+		const uint8_t radioCsPin[] = {27, 5, 22, 33};
+	#elif defined(EVIL_CROW_RF)
+		const uint8_t radioCsPin[] = {5, 27, 22, 33};
+	#else  // ESP32_SDUINO_TEST
+		const uint8_t radioCsPin[] = {5, 32, 27, 33};
+	#endif
+#else
+	#define csPin	SS	   // CSN  out
+	#define mosiPin MOSI   // MOSI out
+	#define misoPin MISO   // MISO in
+	#define sckPin  SCK    // SCLK out	
+#endif
+	
+	#define addr_CWccreset     0x3A   // wenn A5 oder A6, dann erfolgt bei CW (ccRegWrite) ein ccReset
+	#define addr_CWccTEST      0x3B   // wenn = 6x und addr_CWccreset = A5 dann werden beim CCinit_reg auch CC1101_TEST2 - TEST0 gesetzt
+        
+	#define CC1101_CONFIG      0x80
+	#define CC1101_STATUS      0xC0
+	#define CC1101_WRITE_BURST 0x40
+	#define CC1101_READ_BURST  0xC0
+	
+	#define CC1101_IOCFG2      0x00
+	#define CC1101_IOCFG0      0x02
+	#define CC1101_FIFOTHR     0x03
+	#define CC1101_SYNC1       0x04
+	#define CC1101_SYNC0       0x05
+	#define CC1101_PKTLEN      0x06
+	#define CC1101_FREQ2       0x0D  // Frequency control word, high byte
+	#define CC1101_FREQ1       0x0E  // Frequency control word, middle byte
+	#define CC1101_FREQ0       0x0F  // Frequency control word, low byte
+	#define CC1101_IOCFG2      0x00  // GDO2 output configuration
+	#define CC1101_PKTCTRL1    0x07
+	#define CC1101_PKTCTRL0    0x08  // Packet config register
+	#define CC1101_MDMCFG4     0x10
+	#define CC1101_MDMCFG3     0x11
+	#define CC1101_MDMCFG2     0x12
+	#define CC1101_DEVIATN     0x15
+	#define CC1101_TEST2       0x2C
+	
+	// Multi byte memory locations
+	#define CC1101_PATABLE          0x3E  // 8 byte memory
+	#define CC1101_TXFIFO           0x3F
+	#define CC1101_RXFIFO           0x3F
+
+	// Status registers
+	#define CC1101_RSSI      0x34 // Received signal strength indication
+	#define CC1101_MARCSTATE 0x35 // Control state machine state
+	#define CC1101_TXBYTES   0x3A // Underflow and # of bytes in TXFIFO
+	#define CC1101_RXBYTES   0x3B // Overflow and # of bytes in RXFIFO
+	
+	#define MARCSTATE_SLEEP            0x00
+	#define MARCSTATE_IDLE             0x01
+	#define MARCSTATE_XOFF             0x02
+	#define MARCSTATE_ENDCAL           0x0C
+	#define MARCSTATE_RX               0x0D
+	#define MARCSTATE_RX_END           0x0E
+	#define MARCSTATE_RX_RST           0x0F
+	#define MARCSTATE_RXFIFO_OVERFLOW  0x11
+	#define MARCSTATE_TX               0x13
+	#define MARCSTATE_TX_END           0x14
+	#define MARCSTATE_RXTX_SWITCH      0x15
+	#define MARCSTATE_TXFIFO_UNDERFLOW 0x16
+
+	// Strobe commands
+	#define CC1101_SRES     0x30  // reset
+	#define CC1101_SFSTXON  0x31  // Enable and calibrate frequency synthesizer (if MCSM0.FS_AUTOCAL=1).
+	#define CC1101_SXOFF    0x32  // Turn off crystal oscillator
+	#define CC1101_SCAL     0x33  // Calibrate frequency synthesizer and turn it off
+	#define CC1101_SRX      0x34  // Enable RX. Perform calibration first if coming from IDLE and MCSM0.FS_AUTOCAL=1
+	#define CC1101_STX      0x35  // In IDLE state: Enable TX. Perform calibration first if MCSM0.FS_AUTOCAL=1
+	#define CC1101_SIDLE    0x36  // Exit RX / TX, turn off frequency synthesizer
+	#define CC1101_SAFC     0x37  // Perform AFC adjustment of the frequency synthesizer
+	#define CC1101_SFRX     0x3A  // Flush the RX FIFO buffer
+	#define CC1101_SFTX     0x3B  // Flush the TX FIFO buffer.
+	#define CC1101_SNOP     0x3D  // No operation. May be used to get access to the chip status byte.
+
+	// Chip Status Byte
+	#define CC1101_STATUS_CHIP_RDYn_BM             0x80
+	#define CC1101_STATUS_STATE_BM                 0x70
+	#define CC1101_STATUS_FIFO_BYTES_AVAILABLE_BM  0x0F
+
+	// Chip states
+	#define CC1101_STATE_IDLE                      0x00
+	#define CC1101_STATE_RX                        0x10
+	#define CC1101_STATE_TX                        0x20
+	#define CC1101_STATE_FSTXON                    0x30
+	#define CC1101_STATE_CALIBRATE                 0x40
+	#define CC1101_STATE_SETTLING                  0x50
+	#define CC1101_STATE_RX_OVERFLOW               0x60
+	#define CC1101_STATE_TX_UNDERFLOW              0x70
+
+/*#ifdef MAPLE_Mini
+	#define wait_Miso() delayMicroseconds(10)
+	#define waitV_Miso() delayMicroseconds(10)
+#else
+	#define wait_Miso()       while(isHigh(misoPin) ) //{ static uint8_t miso_count=255;delay(1); if(miso_count==0) return 255; miso_count--; }      // wait until SPI MISO line goes low 
+	#define waitV_Miso()      while(isHigh(misoPin) ) //{ static uint8_t miso_count=255;delay(1); if(miso_count==0) return; miso_count--; }      // wait until SPI MISO line goes low 
+#endif*/
+#if defined(MAPLE_Mini) || defined(ESP32)
+	#define cc1101_Select()   digitalLow(radioCsPin[radionr])          // select (SPI) CC1101
+	#define cc1101_Deselect() digitalHigh(radioCsPin[radionr])
+#else
+	#define cc1101_Select()   digitalLow(csPin)          // select (SPI) CC1101
+	#define cc1101_Deselect() digitalHigh(csPin)
+#endif
+	#define EE_CC1101_CFG        2
+	#define EE_CC1101_CFG_SIZE   0x29
+	#define EE_CC1101_PA         0x30  //  (EE_CC1101_CFG+EE_CC1101_CFG_SIZE)  // 2B
+	#define EE_CC1101_PA_SIZE    8
+	
+	#define PATABLE_DEFAULT_433  0x84   // 5 dB default value for factory reset 433 MHz
+	#define PATABLE_DEFAULT_868  0x81   // 5 dB default value for factory reset 868 MHz
+	
+
+	//------------------------------------------------------------------------------
+	// Chip Status Byte
+	//------------------------------------------------------------------------------
+
+	// Bit fields in the chip status byte
+	#define CC1101_STATUS_CHIP_RDYn_BM             0x80
+	#define CC1101_STATUS_STATE_BM                 0x70
+	#define CC1101_STATUS_FIFO_BYTES_AVAILABLE_BM  0x0F
+
+		// Chip states
+	#define CC1101_STATE_IDLE                      0x00
+	#define CC1101_STATE_RX                        0x10
+	#define CC1101_STATE_TX                        0x20
+	#define CC1101_STATE_FSTXON                    0x30
+	#define CC1101_STATE_CALIBRATE                 0x40
+	#define CC1101_STATE_SETTLING                  0x50
+	#define CC1101_STATE_RX_OVERFLOW               0x60
+	#define CC1101_STATE_TX_UNDERFLOW              0x70
+
+
+	#ifdef ARDUINO_AVR_ICT_BOARDS_ICT_BOARDS_AVR_RADINOCC1101
+	uint8_t RADINOVARIANT = 0;            // Standardwert welcher je radinoVarinat geaendert wird
+	#endif
+	static const uint8_t initVal[] PROGMEM = {
+		// Becker Centronic / Ralf9 SlowRF profile: 868.282806 MHz, 2-FSK,
+		// asynchronous serial data on GDO2. Source: FHEM Becker thread (2020).
+		0x0D, 0x2E, 0x2D, 0x47, 0xD3, 0x91, 0x3D, 0x04,
+		0x32, 0x00, 0x00, 0x06, 0x00, 0x21, 0x65, 0x3F,
+		0x57, 0xC4, 0x06, 0x23, 0xB9, 0x40, 0x07, 0x00,
+		0x18, 0x14, 0x6C, 0x00, 0x00, 0x92, 0x87, 0x6B,
+		0xF8, 0xB6, 0x11, 0xEF, 0x2B, 0x14, 0x1F, 0x41,
+		0x00
+	};
+
+	void printHex2(const byte hex) {   // Todo: printf oder scanf nutzen
+		if (hex < 16) {
+			MSG_PRINT("0");
+		}
+		MSG_PRINT(hex, HEX);
+	}
+
+	uint8_t sendSPI(const uint8_t val) {					     // send byte via SPI
+#ifdef MAPLE_Mini
+		return SPI_2.transfer(val);
+#elif defined(ESP32)
+		return SPI.transfer(val);
+#else
+		SPDR = val;                                      // transfer byte via SPI
+		while (!(SPSR & _BV(SPIF)));                     // wait until SPI operation is terminated
+		return SPDR;
+#endif
+	}
+	
+	uint8_t waitTo_Miso() {	// wait with timeout until MISO goes low
+		uint8_t i = 255;
+		while(isHigh(misoPin)) {
+			delayMicroseconds(10);
+			i--;
+			if (i == 0) {	// timeout
+				cc1101_Deselect();
+				break;
+			}
+		}
+		return i;
+	}
+
+	uint8_t cmdStrobe(const uint8_t cmd) {                  // send command strobe to the CC1101 IC via SPI
+		cc1101_Select();                                // select CC1101
+		//wait_Miso();                                    // wait until MISO goes low
+		uint8_t ret = sendSPI(cmd);                     // send strobe command
+		//wait_Miso();                                    // wait until MISO goes low
+		cc1101_Deselect();                              // deselect CC1101
+		return ret;					// Chip Status Byte
+	}
+	
+	uint8_t cmdStrobeTo(const uint8_t cmd) {            // wait MISO and send command strobe to the CC1101 IC via SPI
+		cc1101_Select();                                // select CC1101
+		if (waitTo_Miso() == 0) {                       // wait with timeout until MISO goes low
+			return false;          // timeout
+		}
+		sendSPI(cmd);                     // send strobe command
+		//wait_Miso();                                  // wait until MISO goes low
+		cc1101_Deselect();                              // deselect CC1101
+		return true;
+	}
+
+	uint8_t readReg(const uint8_t regAddr, const uint8_t regType) {       // read CC1101 register via SPI
+		cc1101_Select();                                // select CC1101
+		//wait_Miso();                                    // wait until MISO goes low
+		sendSPI(regAddr | regType);                     // send register address
+		uint8_t val = sendSPI(0x00);                    // read result
+		cc1101_Deselect();                              // deselect CC1101
+		return val;
+	}
+
+	void writeReg(const uint8_t regAddr, const uint8_t val) {     // write single register into the CC1101 IC via SPI
+		cc1101_Select();                                // select CC1101
+		//waitV_Miso();                                    // wait until MISO goes low
+		sendSPI(regAddr);                               // send register address
+		sendSPI(val);                                   // send value
+		cc1101_Deselect();                              // deselect CC1101
+	}
+
+	void readPatable(void) {
+		uint8_t PatableArray[8];
+		// das PatableArray wird zum zwischenspeichern der PATABLE verwendet,
+		// da ich mir nicht sicher bin ob es timing maessig passt, wenn es nach jedem sendSPI(0x00) eine kurze Pause beim msgprint gibt.
+		
+		cc1101_Select();                                // select CC1101
+		//waitV_Miso();                                    // wait until MISO goes low
+		sendSPI(CC1101_PATABLE | CC1101_READ_BURST);    // send register address
+		for (uint8_t i = 0; i < 8; i++) {
+			PatableArray[i] = sendSPI(0x00);        // read result
+		}
+		cc1101_Deselect();
+
+		for (uint8_t i = 0; i < 8; i++) {
+			printHex2(PatableArray[i]);
+			MSG_PRINT(" ");
+		}
+		MSG_PRINTLN("");
+	}
+
+	void writePatable(void) {
+		cc1101_Select();                                // select CC1101
+		//waitV_Miso();                                    // wait until MISO goes low
+		sendSPI(CC1101_PATABLE | CC1101_WRITE_BURST);   // send register address
+		for (uint8_t i = 0; i < 8; i++) {
+			sendSPI(tools::EEbankRead(EE_CC1101_PA+i));                     // send value
+		}
+			cc1101_Deselect();
+	}
+	
+
+  void readCCreg(const uint8_t reg) {   // read CC1101 register
+    uint8_t var;
+    uint8_t hex;
+    uint8_t n;
+
+       if (cmdstring.charAt(3) == 'n' && isHexadecimalDigit(cmdstring.charAt(4))) {   // C<reg>n<anz>  gibt anz+2 fortlaufende register zurueck
+           hex = (uint8_t)cmdstring.charAt(4);
+           n = tools::hex2int(hex);
+           if (reg < 0x2F) {
+              MSG_PRINT("C");
+              printHex2(reg);
+              MSG_PRINT("n");
+              n += 2;
+              printHex2(n);
+              MSG_PRINT("=");
+              for (uint8_t i = 0; i < n; i++) {
+                 var = readReg(reg + i, CC1101_CONFIG);
+                 printHex2(var);
+              }
+              MSG_PRINTLN("");
+           }
+       }
+       else {
+       if (reg < 0x3E) {
+          if (reg < 0x2F) {
+             var = readReg(reg, CC1101_CONFIG);
+          }
+          else {
+             var = readReg(reg, CC1101_STATUS);
+          }
+          MSG_PRINT("C");
+          printHex2(reg);
+          MSG_PRINT(" = ");
+          printHex2(var);
+          MSG_PRINTLN("");
+       }
+       else if (reg == 0x3E) {                   // patable
+          MSG_PRINT(F("C3E = "));
+          readPatable();
+       }
+       else if (reg == 0x99) {                   // alle register
+         for (uint8_t i = 0; i < 0x2f; i++) {
+           if (i == 0 || i == 0x10 || i == 0x20) {
+             if (i > 0) {
+               MSG_PRINT(" ");
+             }
+             MSG_PRINT(F("ccreg "));
+             printHex2(i);
+             MSG_PRINT(F(": "));
+           }
+           var = readReg(i, CC1101_CONFIG);
+           printHex2(var);
+           MSG_PRINT(" ");
+         }
+         MSG_PRINTLN("");
+       }
+       else {
+         MSG_PRINTLN(F("error"));
+       }
+     }
+  }
+
+  void commandStrobes(void) {
+    uint8_t hex;
+    uint8_t reg;
+    uint8_t val;
+  
+    if (isHexadecimalDigit(cmdstring.charAt(3))) {
+        hex = (uint8_t)cmdstring.charAt(3);
+        reg = tools::hex2int(hex) + 0x30;
+        if (reg < 0x3e) {
+             cc1101_Select();
+             if (waitTo_Miso() == 0) {                 // wait with timeout until MISO goes low
+                 MSG_PRINTLN(F("timeout!"));
+                 return;
+             }
+             val = sendSPI(reg);                       // send strobe command
+             cc1101_Deselect();
+             MSG_PRINT(F("cmdStrobeReg "));
+             printHex2(reg);
+             MSG_PRINT(F(" chipStatus "));
+             val = val >> 4;
+             MSG_PRINT(val, HEX);
+             if (reg != CC1101_SXOFF) {
+                 delay(2);
+                 val = cmdStrobe(CC1101_SNOP);        //  No operation, used to get access to the chip status byte.
+                 MSG_PRINT(F(" delay2 "));
+                 val = val >> 4;
+                 MSG_PRINTLN(val, HEX);;
+             }
+             else {
+                 MSG_PRINTLN("");
+             }
+             return;
+         }
+     }
+     MSG_PRINTLN(F("error"));
+  }
+
+
+void writeCCpatable(uint8_t var) {           // write 8 byte to patable (kein pa ramping)
+	for (uint8_t i = 0; i < 8; i++) {
+		if (i == 1) {
+			tools::EEbankWrite(EE_CC1101_PA + i, var);
+		} else {
+			tools::EEbankWrite(EE_CC1101_PA + i, 0);
+		}
+	}
+	#if defined(MAPLE_Mini) || defined(ESP32)
+	tools::EEstore();
+	#endif
+	writePatable();
+}
+
+
+	void ccFactoryReset(bool flag) {
+		for (uint8_t i = 0; i<sizeof(initVal); i++) {
+        	tools::EEbankWrite(EE_CC1101_CFG + i, pgm_read_byte(&initVal[i]));
+		}
+		tools::EEbankWrite(addr_CWccreset, 0xFF);
+		if (flag == false) {
+			return;
+		}
+		for (uint8_t i = 0; i < 8; i++) {
+			if (i == 1) {
+				if (bankOffset == 0) {	// Bank 0 normalerweise 433 Mhz
+					tools::EEbankWrite(EE_CC1101_PA + i, PATABLE_DEFAULT_433);
+				} else {
+					tools::EEbankWrite(EE_CC1101_PA + i, PATABLE_DEFAULT_868);
+				}
+			} else {
+				tools::EEbankWrite(EE_CC1101_PA + i, 0);
+			}
+		}
+		#if defined(MAPLE_Mini) || defined(ESP32)
+		tools::EEstore();
+		#endif
+		MSG_PRINTLN(F("ccFactoryReset done"));  
+	}
+
+
+	uint8_t getCCVersion()
+	{
+		return readReg(0xF1,CC1101_CONFIG);  // Version
+	}
+	
+	uint8_t getCCPartnum()
+	{
+		return readReg(0xF0,CC1101_CONFIG);  // Partnum
+	}
+	
+	
+	inline void setup()
+	{
+	#ifdef MAPLE_Mini
+		// Setup SPI 2
+		SPI_2.begin();	//Initialize the SPI_2 port.
+		SPI_2.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+	#elif defined(ESP32)
+		SPI.begin(sckPin, misoPin, mosiPin, radioCsPin[0]);
+		SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+	#else
+		pinAsOutput(sckPin);
+		pinAsOutput(mosiPin);
+		pinAsInput(misoPin);
+		PCR = _BV(SPE) | _BV(MSTR);               // SPI speed = CLK/4
+		pinAsOutput(csPin);                    // set pins for SPI communication
+		digitalHigh(csPin);                 // SPI init
+	#endif
+		
+	#if defined(MAPLE_Mini) || defined(ESP32)
+		for (uint8_t i = 0; i < 4; i++) {
+			pinAsOutput(radioCsPin[i]);
+			digitalHigh(radioCsPin[i]);
+		}
+	#endif
+		
+		#ifdef PIN_MARK433
+		pinAsInputPullUp(PIN_MARK433);
+		#endif
+		
+		/*
+		SPCR = ((1 << SPE) |               		// SPI Enable
+		(0 << SPIE) |              		// SPI Interupt Enable
+		(0 << DORD) |              		// Data Order (0:MSB first / 1:LSB first)
+		(1 << MSTR) |              		// Master/Slave select
+		(0 << SPR1) | (0 << SPR0) |   		// SPI Clock Rate
+		(0 << CPOL) |             		// Clock Polarity (0:SCK low / 1:SCK hi when idle)
+		(0 << CPHA));             		// Clock Phase (0:leading / 1:trailing edge sampling)
+
+		SPSR = (1 << SPI2X);             		// Double Clock Rate
+		*/
+		//pinAsInput(PIN_SEND);        // gdo0Pi, sicherheitshalber bis zum CC1101 init erstmal input   
+	#if !defined(MAPLE_Mini) && !defined(ESP32)
+		digitalHigh(sckPin);
+		digitalLow(mosiPin);
+	#endif
+	}
+
+	uint8_t getRSSI()
+	{
+		return readReg(CC1101_RSSI, CC1101_STATUS);// Pruefen ob Umwandung von uint to int den richtigen Wert zurueck gibt
+	}
+	
+	uint8_t getMARCSTATE()	// Control state machine state
+	{
+		return readReg(CC1101_MARCSTATE, CC1101_STATUS);// Pruefen ob Umwandung von uint to int den richtigen Wert zurueck gibt
+	}
+	
+	uint8_t getRXBYTES()
+	{
+		return readReg(CC1101_RXBYTES,CC1101_STATUS);  // 
+	}
+	
+	void readRXFIFO(uint8_t* data, uint8_t length, uint8_t *rssi, uint8_t *lqi) {  // WMBus
+		cc1101_Select();
+		sendSPI(CC1101_RXFIFO | CC1101_READ_BURST);    // send register address
+		for (uint8_t i = 0; i < length; i++)
+			data[i] = sendSPI(0);        // read result
+		
+		if (rssi) {
+			*rssi = sendSPI(0);
+			if (lqi) {
+				*lqi =  sendSPI(0);
+			}
+		}
+		cc1101_Deselect();
+	}
+
+	
+	bool readRXFIFOdup(uint8_t len, uint8_t ccmode, bool appendrssi) {
+		bool dup = true;
+		
+		cc1101_Select();                                // select CC1101
+		sendSPI(CC1101_RXFIFO | CC1101_READ_BURST);    // send register address
+		if (ccmode != 2) {
+			for (uint8_t i = 0; i < len; i++) {
+				ccBuf[radionr][i] = sendSPI(0x00);        // read result
+			}
+		}
+		else {
+			uint8_t rx;
+			for (uint8_t i = 0; i < len; i++) {
+				rx = sendSPI(0x00);        // read result
+				if (rx != ccBuf[radionr][i]) {
+					if (i < len-2) {
+						dup = false;
+					}
+					else if (appendrssi == false) {
+						dup = false;
+					}
+					ccBuf[radionr][i] = rx;
+				}
+			}
+		}
+		cc1101_Deselect();
+
+		return dup;
+	}
+	
+	void WriteFifo(const uint8_t* data, uint8_t length) {
+		cc1101_Select();
+
+		sendSPI(CC1101_TXFIFO | CC1101_WRITE_BURST);   // send register address
+		for (uint8_t i = 0; i < length; i++)
+			sendSPI(data[i]);
+
+		cc1101_Deselect();
+	}
+
+	void sendFIFO(int8_t start, uint8_t end) {
+		uint8_t val;
+		uint8_t i;
+		
+		cc1101_Select();                                // select CC1101
+		//waitV_Miso();                                    // wait until MISO goes low
+		sendSPI(CC1101_TXFIFO | CC1101_WRITE_BURST);   // send register address
+		for (i = start; i < end; i+=2) {
+			val = tools::cmdstringPos2int(i);
+			//printHex2(val);
+			//MSG_PRINT(F(" "));
+			sendSPI(val);		// send value
+		}
+		cc1101_Deselect();	//Wait for sending to finish (CC1101 will go to RX state automatically
+
+		for(i=0; i< 200;++i) 
+		{
+			if( readReg(CC1101_MARCSTATE, CC1101_STATUS) != MARCSTATE_TX)
+				break; //neither in RX nor TX, probably some error
+			delay(1);
+		}
+		//MSG_PRINT(F("wtx="));
+		//MSG_PRINTLN(i);
+		//MSG_PRINTLN("");
+	}
+	
+	uint8_t ccStrobe_SNOP()	// No operation. May be used to get access to the chip status byte
+	{
+		return cmdStrobe(CC1101_SNOP);
+	}
+	
+//	void setIdleMode()
+	void ccStrobe_SIDLE()	// Idle mode
+	{
+		cmdStrobe(CC1101_SIDLE);
+		//delay(1);
+	}
+	
+	void ccStrobe_SRX()	// Enable RX
+	{
+		cmdStrobe(CC1101_SRX);
+	}
+	
+	void ccStrobe_SFRX()	// Flush the RX FIFO buffer
+	{
+		cmdStrobe(CC1101_SFRX);
+	}
+	
+	 uint8_t flushrx() {		// Flush the RX FIFO buffer
+		if (cmdStrobeTo(CC1101_SIDLE) == false) {
+			return false;
+		}
+		cmdStrobe(CC1101_SNOP);
+		cmdStrobe(CC1101_SFRX);
+		return true;
+	}
+
+	void setReceiveMode()
+	{
+		//setIdleMode();
+		uint8_t maxloop = 0xff;
+
+		while (maxloop-- &&	(cmdStrobe(CC1101_SRX) & CC1101_STATUS_STATE_BM) != CC1101_STATE_RX) // RX enable
+			delay(1);
+		if (maxloop == 0 )		DBG_PRINTLN(F("CC1101: Setting RX failed"));
+
+	}
+
+	uint8_t setTransmitMode()
+	{
+		if (cmdStrobeTo(CC1101_SFTX) == false) {	// flush TX with wait MISO timeout
+			DBG_PRINTLN(F("CC1101: flush TX failed"));
+			return false;
+		}
+		cmdStrobe(CC1101_SIDLE);
+		uint8_t maxloop = 0xff;
+		while (maxloop-- && (cmdStrobe(CC1101_STX) & CC1101_STATUS_STATE_BM) != CC1101_STATE_TX)  // TX enable
+			delay(1);
+		if (maxloop == 0) {
+			DBG_PRINTLN(F("CC1101: Setting TX failed"));
+			return false;
+		}
+		return true;
+	}
+	
+	bool CCreset(void) {
+		cc1101_Deselect();            // some deselect and selects to init the cc1101
+		delayMicroseconds(30);
+
+		// Begin of power on reset
+		cc1101_Select();
+		delayMicroseconds(30);
+
+		cc1101_Deselect();
+		delayMicroseconds(45);
+
+		cc1101_Select();
+		if (waitTo_Miso() == 0) {  // wait with timeout until MISO goes low
+			return false;            // timeout
+		}
+		sendSPI(CC1101_SRES);        // send strobe command
+		
+		if (waitTo_Miso() == 0) {  // wait with timeout until MISO goes low
+			return false;            // timeout
+		}
+		cc1101_Deselect();
+		
+		delay(1);
+		return true;
+	}
+	
+	void CCinit_reg(void) {                              // initialize CC1101
+		cc1101_Select();
+		
+		sendSPI(CC1101_WRITE_BURST);
+		for (uint8_t i = 0; i<sizeof(initVal); i++) {
+  #ifdef RALF9_BECKER_PROFILE
+			// Always use the reviewed compiled profile, independent of stale EEPROM.
+			sendSPI(pgm_read_byte(&initVal[i]));
+  #else
+			sendSPI(tools::EEbankRead(EE_CC1101_CFG + i));
+  #endif
+		}
+		cc1101_Deselect();
+		delayMicroseconds(10);            // ### todo: welcher Wert ist als delay sinnvoll? ###
+
+  #ifdef RALF9_BECKER_PROFILE
+		writeReg(CC1101_TEST2, 0x88);
+		writeReg(CC1101_TEST2 + 1, 0x31);
+		writeReg(CC1101_TEST2 + 2, 0x0B);
+  #else
+		if (tools::EEbankRead(addr_CWccreset) == 0xA5 && ((tools::EEbankRead(addr_CWccTEST) & 0xF0) == 0x60)) {
+			for (uint8_t i = 0; i<3; i++) {
+				writeReg(CC1101_TEST2 + i, tools::EEbankRead(CC1101_TEST2 + i));
+			}
+		}
+  #endif
+		writePatable();                                 // write PatableArray to patable reg
+
+		cmdStrobe(CC1101_SCAL); 
+		delay(1);
+	}
+	
+	void CCinit(void) {                              // initialize CC1101
+		CCreset();
+		CCinit_reg();
+		//setReceiveMode();
+	}
+
+	bool regCheck()
+	{
+		/*
+		DBG_PRINT("CC1101_PKTCTRL0="); DBG_PRINT(readReg(CC1101_PKTCTRL0, CC1101_CONFIG));
+		DBG_PRINT(" vs EEPROM PKTCTRL0="); DBG_PRINTLN(initVal[CC1101_PKTCTRL0]);
+
+		DBG_PRINT("C1100_IOCFG2="); DBG_PRINT(readReg(CC1101_IOCFG2, CC1101_CONFIG));
+		DBG_PRINT(" vs EEPROM IOCFG2="); DBG_PRINTLN(initVal[CC1101_IOCFG2]);
+		*/
+		return (readReg(CC1101_PKTCTRL0, CC1101_CONFIG) == initVal[CC1101_PKTCTRL0]) && (readReg(CC1101_IOCFG2, CC1101_CONFIG) == initVal[CC1101_IOCFG2]);
+	}
+
+}
+
+#endif
