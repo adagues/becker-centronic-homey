@@ -1,26 +1,28 @@
 /**
  * Becker Centronic RF scanner for ESP32 + CC1101 (868 MHz).
  *
- * Why this exists: with the published Becker profile (868.282806 MHz, 2-FSK)
- * the remote is received very strongly (RSSI about -37 dBm) but the demodulator
- * produces no data transitions on GDO2. That pattern fits a carrier that is
- * inside the wide 325 kHz receive filter yet off the tuned centre, or a
- * modulation that is not 2-FSK.
+ * Version 2. The first scan showed a peak near 868.300-868.350 MHz at about
+ * -48 dBm, but it reappeared identically on every sweep and produced zero GDO2
+ * transitions, while a dozen bins reported an identical -59 dBm floor. That mix
+ * of a permanent carrier and a contaminated floor cannot answer the question, so
+ * this version measures each channel TWICE and reports the difference:
  *
- * Two modes, switchable over serial:
- *   SCAN  - narrow filter, sweep 867.70 .. 869.10 MHz and report where the
- *           remote's carrier actually peaks.
- *   PROBE - stay on the strongest frequency and cycle modulation / data-rate /
- *           deviation candidates, counting Becker-like pulse widths on GDO2.
+ *   BASELINE - you do not touch the remote
+ *   MEASURE  - you press the remote continuously
+ *
+ * Only a channel whose level rises between the two passes can be the remote.
+ * RSSI is now sampled after a longer settle and averaged, and both mean and max
+ * are kept, so a single transient sample can no longer create a fake peak.
  *
  * Wiring (unchanged):
  *   CC1101 VCC -> 3V3 (never 5V)   GND  -> GND
  *   MOSI -> GPIO23   SCLK -> GPIO18   MISO -> GPIO19
  *   GDO2 -> GPIO4    GDO0 -> not connected   CSN -> GPIO5
  *
- * Serial: 115200 baud. Commands (one character + Enter):
- *   s  scan mode        p  probe mode
- *   t  print table      z  zero statistics
+ * Serial: 115200 baud. One character + Enter:
+ *   b  baseline pass (do not press)     m  measure pass (keep pressing)
+ *   t  print the comparison table       p  probe modulations on the best channel
+ *   z  clear everything
  *
  * No Wi-Fi: it caused brownout resets on this board.
  */
@@ -125,7 +127,7 @@ static void IRAM_ATTR onGdo2Edge() {
   portEXIT_CRITICAL_ISR(&statsMux);
 }
 
-static void readAndClearStats(uint32_t& edges, uint32_t& beckerPulses) {
+static void takeStats(uint32_t& edges, uint32_t& beckerPulses) {
   portENTER_CRITICAL(&statsMux);
   edges = edgeCount;
   beckerPulses = beckerPulseCount;
@@ -151,8 +153,7 @@ static bool tune(double frequencyHz) {
   if (!writeReg(0x0E, (word >> 8) & 0xFF)) return false;
   if (!writeReg(0x0F, word & 0xFF)) return false;
   // MCSM0 keeps FS_AUTOCAL on IDLE->RX, so SRX recalibrates for the new channel.
-  if (!strobe(STROBE_SRX)) return false;
-  return true;
+  return strobe(STROBE_SRX);
 }
 
 static bool setModem(uint8_t mdmcfg4, uint8_t mdmcfg3, uint8_t mdmcfg2,
@@ -163,8 +164,7 @@ static bool setModem(uint8_t mdmcfg4, uint8_t mdmcfg3, uint8_t mdmcfg2,
   if (!writeReg(0x11, mdmcfg3)) return false;
   if (!writeReg(0x12, mdmcfg2)) return false;
   if (!writeReg(0x15, deviatn)) return false;
-  if (!strobe(STROBE_SRX)) return false;
-  return true;
+  return strobe(STROBE_SRX);
 }
 
 static bool cc1101Init() {
@@ -203,99 +203,133 @@ static bool cc1101Init() {
   return strobe(STROBE_SRX);
 }
 
-// ---------- scan mode ----------
+// ---------- channel plan ----------
 static const double SCAN_START_HZ = 867700000.0;
 static const double SCAN_STEP_HZ = 50000.0;
-static const size_t SCAN_BINS = 29;   // 867.70 .. 869.10 MHz
-static const uint32_t SCAN_SETTLE_MS = 3;
-static const uint32_t SCAN_DWELL_MS = 22;
-// Narrow filter (101.5 kHz) so a strong carrier only shows up near its channel.
+static const size_t SCAN_BINS = 29;   // 867.700 .. 869.100 MHz
+// Narrow filter (101.6 kHz) so a carrier only registers near its real channel.
 static const uint8_t SCAN_MDMCFG4 = 0xC6;
 static const uint8_t SCAN_MDMCFG3 = 0x83;   // about 2400 baud
 static const uint8_t SCAN_MDMCFG2 = 0x00;   // 2-FSK, no sync gating
 static const uint8_t SCAN_DEVIATN = 0x40;   // about 25 kHz
-static const int HIT_THRESHOLD_DBM = -65;
 
-static int binMaxRssi[SCAN_BINS];
-static uint32_t binBeckerPulses[SCAN_BINS];
-static uint32_t binEdges[SCAN_BINS];
+// RSSI needs the AGC to settle after each channel change; sample only after it
+// and average, instead of trusting one early reading.
+static const uint32_t RSSI_SETTLE_MS = 6;
+static const uint32_t RSSI_SAMPLES = 10;
+static const uint32_t RSSI_SAMPLE_GAP_MS = 2;
+
+struct BinStats {
+  int32_t meanSum;
+  uint32_t meanCount;
+  int maxDbm;
+  uint32_t edges;
+  uint32_t beckerPulses;
+};
+
+static BinStats baseline[SCAN_BINS];
+static BinStats measured[SCAN_BINS];
+static uint32_t baselineSweeps = 0;
+static uint32_t measureSweeps = 0;
 static size_t scanIndex = 0;
-static uint32_t sweepCount = 0;
 
 static double binFrequency(size_t index) {
   return SCAN_START_HZ + static_cast<double>(index) * SCAN_STEP_HZ;
 }
 
-static void resetStats() {
+static void clearStats(BinStats* stats) {
   for (size_t i = 0; i < SCAN_BINS; i++) {
-    binMaxRssi[i] = -127;
-    binBeckerPulses[i] = 0;
-    binEdges[i] = 0;
+    stats[i].meanSum = 0;
+    stats[i].meanCount = 0;
+    stats[i].maxDbm = -127;
+    stats[i].edges = 0;
+    stats[i].beckerPulses = 0;
   }
-  sweepCount = 0;
-  uint32_t edges = 0;
-  uint32_t pulses = 0;
-  readAndClearStats(edges, pulses);
-  Serial.println(F("statistics cleared"));
 }
 
-static void printTable() {
-  Serial.printf("TABLE sweeps=%lu\n", static_cast<unsigned long>(sweepCount));
-  size_t best = 0;
-  for (size_t i = 0; i < SCAN_BINS; i++) {
-    if (binMaxRssi[i] > binMaxRssi[best]) best = i;
-  }
-  for (size_t i = 0; i < SCAN_BINS; i++) {
-    if (binMaxRssi[i] == -127 && binEdges[i] == 0) continue;
-    Serial.printf("BIN f=%.3f MHz max_rssi=%d dBm becker=%lu edges=%lu%s\n",
-                  binFrequency(i) / 1e6, binMaxRssi[i],
-                  static_cast<unsigned long>(binBeckerPulses[i]),
-                  static_cast<unsigned long>(binEdges[i]),
-                  i == best ? "  <== strongest" : "");
-  }
-  Serial.printf("BEST f=%.3f MHz max_rssi=%d dBm\n", binFrequency(best) / 1e6,
-                binMaxRssi[best]);
+static int binMean(const BinStats& stats) {
+  if (stats.meanCount == 0) return -127;
+  return static_cast<int>(stats.meanSum / static_cast<int32_t>(stats.meanCount));
 }
 
-static void scanStep() {
-  const size_t index = scanIndex;
-  if (!tune(binFrequency(index))) {
-    Serial.println(F("SCAN ERROR: tune failed"));
-    return;
-  }
-  delay(SCAN_SETTLE_MS);
+// ---------- one measurement of one channel ----------
+static bool sampleBin(size_t index, BinStats& into) {
+  if (!tune(binFrequency(index))) return false;
+  delay(RSSI_SETTLE_MS);
 
   uint32_t edges = 0;
   uint32_t pulses = 0;
-  readAndClearStats(edges, pulses);
+  takeStats(edges, pulses);
 
+  int32_t sum = 0;
+  uint32_t count = 0;
   int peak = -127;
-  const uint32_t until = millis() + SCAN_DWELL_MS;
-  while (static_cast<int32_t>(until - millis()) > 0) {
+  for (uint32_t i = 0; i < RSSI_SAMPLES; i++) {
     uint8_t raw = 0;
     if (readStatus(REG_RSSI, raw)) {
       const int dbm = rssiDbm(raw);
+      sum += dbm;
+      count++;
       if (dbm > peak) peak = dbm;
     }
-    delay(1);
+    delay(RSSI_SAMPLE_GAP_MS);
   }
-  readAndClearStats(edges, pulses);
+  takeStats(edges, pulses);
 
-  if (peak > binMaxRssi[index]) binMaxRssi[index] = peak;
-  binBeckerPulses[index] += pulses;
-  binEdges[index] += edges;
-
-  if (peak >= HIT_THRESHOLD_DBM) {
-    Serial.printf("HIT f=%.3f MHz rssi=%d dBm becker=%lu edges=%lu\n",
-                  binFrequency(index) / 1e6, peak,
-                  static_cast<unsigned long>(pulses),
-                  static_cast<unsigned long>(edges));
+  if (count > 0) {
+    into.meanSum += sum;
+    into.meanCount += count;
   }
+  if (peak > into.maxDbm) into.maxDbm = peak;
+  into.edges += edges;
+  into.beckerPulses += pulses;
+  return true;
+}
 
-  scanIndex++;
-  if (scanIndex >= SCAN_BINS) {
-    scanIndex = 0;
-    sweepCount++;
+// ---------- table ----------
+static size_t bestDeltaBin() {
+  size_t best = 0;
+  int bestDelta = -1000;
+  for (size_t i = 0; i < SCAN_BINS; i++) {
+    if (measured[i].meanCount == 0) continue;
+    const int base = baseline[i].meanCount == 0 ? -127 : binMean(baseline[i]);
+    const int delta = measured[i].maxDbm - base;
+    if (delta > bestDelta) {
+      bestDelta = delta;
+      best = i;
+    }
+  }
+  return best;
+}
+
+static void printTable() {
+  Serial.printf("TABLE baseline_sweeps=%lu measure_sweeps=%lu\n",
+                static_cast<unsigned long>(baselineSweeps),
+                static_cast<unsigned long>(measureSweeps));
+  if (measureSweeps == 0) {
+    Serial.println(F("no measure pass yet: send b (idle), then m (pressing)"));
+  }
+  const size_t best = bestDeltaBin();
+  for (size_t i = 0; i < SCAN_BINS; i++) {
+    const int baseMean = binMean(baseline[i]);
+    const int baseMax = baseline[i].maxDbm;
+    const int measMean = binMean(measured[i]);
+    const int measMax = measured[i].maxDbm;
+    const int delta = (measMax == -127 || baseMean == -127)
+                          ? 0
+                          : measMax - baseMean;
+    Serial.printf(
+        "BIN f=%.3f idle_mean=%d idle_max=%d press_mean=%d press_max=%d "
+        "delta=%d becker=%lu edges=%lu%s%s\n",
+        binFrequency(i) / 1e6, baseMean, baseMax, measMean, measMax, delta,
+        static_cast<unsigned long>(measured[i].beckerPulses),
+        static_cast<unsigned long>(measured[i].edges),
+        i == best && measureSweeps > 0 ? "  <== best delta" : "",
+        baseMax >= -65 ? "  [carrier already present when idle]" : "");
+  }
+  if (measureSweeps > 0) {
+    Serial.printf("BEST f=%.3f MHz delta=%d dB\n", binFrequency(best) / 1e6,
+                  measured[best].maxDbm - binMean(baseline[best]));
   }
 }
 
@@ -324,12 +358,9 @@ static size_t probeIndex = 0;
 static double probeFrequencyHz = 0.0;
 
 static void startProbe() {
-  size_t best = 0;
-  for (size_t i = 0; i < SCAN_BINS; i++) {
-    if (binMaxRssi[i] > binMaxRssi[best]) best = i;
-  }
+  const size_t best = bestDeltaBin();
   probeFrequencyHz =
-      binMaxRssi[best] > -127 ? binFrequency(best) : 868282806.0;
+      measureSweeps > 0 ? binFrequency(best) : 868282806.0;
   probeIndex = 0;
   Serial.printf("PROBE start f=%.3f MHz (press the remote repeatedly)\n",
                 probeFrequencyHz / 1e6);
@@ -343,11 +374,11 @@ static void probeStep() {
     Serial.println(F("PROBE ERROR: radio setup failed"));
     return;
   }
-  delay(5);
+  delay(RSSI_SETTLE_MS);
 
   uint32_t edges = 0;
   uint32_t pulses = 0;
-  readAndClearStats(edges, pulses);
+  takeStats(edges, pulses);
 
   int peak = -127;
   const uint32_t until = millis() + PROBE_DWELL_MS;
@@ -359,7 +390,7 @@ static void probeStep() {
     }
     delay(5);
   }
-  readAndClearStats(edges, pulses);
+  takeStats(edges, pulses);
 
   uint8_t marc = 0xFF;
   uint8_t freqest = 0;
@@ -367,7 +398,7 @@ static void probeStep() {
   readStatus(REG_FREQEST, freqest);
 
   Serial.printf(
-      "PROBE %-22s rssi=%d dBm becker=%lu edges=%lu marc=0x%02X freqest=%d\n",
+      "PROBE %-22s max_rssi=%d becker=%lu edges=%lu marc=0x%02X freqest=%d\n",
       config.name, peak, static_cast<unsigned long>(pulses),
       static_cast<unsigned long>(edges), marc & 0x1F,
       static_cast<int>(static_cast<int8_t>(freqest)));
@@ -376,18 +407,26 @@ static void probeStep() {
 }
 
 // ---------- main ----------
-enum class Mode : uint8_t { Scan, Probe };
-static Mode mode = Mode::Scan;
+enum class Mode : uint8_t { Idle, Baseline, Measure, Probe };
+static Mode mode = Mode::Idle;
 static bool radioReady = false;
 
 static void handleSerial() {
   while (Serial.available() > 0) {
-    const char command = static_cast<char>(Serial.read());
-    switch (command) {
-      case 's':
-        mode = Mode::Scan;
+    switch (static_cast<char>(Serial.read())) {
+      case 'b':
+        clearStats(baseline);
+        baselineSweeps = 0;
         scanIndex = 0;
-        Serial.println(F("mode: SCAN"));
+        mode = Mode::Baseline;
+        Serial.println(F("BASELINE running: do NOT touch the remote"));
+        break;
+      case 'm':
+        clearStats(measured);
+        measureSweeps = 0;
+        scanIndex = 0;
+        mode = Mode::Measure;
+        Serial.println(F("MEASURE running: press the remote continuously"));
         break;
       case 'p':
         mode = Mode::Probe;
@@ -397,7 +436,12 @@ static void handleSerial() {
         printTable();
         break;
       case 'z':
-        resetStats();
+        clearStats(baseline);
+        clearStats(measured);
+        baselineSweeps = 0;
+        measureSweeps = 0;
+        mode = Mode::Idle;
+        Serial.println(F("cleared"));
         break;
       default:
         break;
@@ -408,10 +452,12 @@ static void handleSerial() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\nBecker CC1101 frequency scanner"));
-  Serial.println(F("commands: s=scan  p=probe  t=table  z=zero"));
+  Serial.println(F("\nBecker CC1101 scanner v2 (idle vs press comparison)"));
+  Serial.println(F("commands: b=baseline  m=measure  t=table  p=probe  z=clear"));
 
-  resetStats();
+  clearStats(baseline);
+  clearStats(measured);
+
   radioReady = cc1101Init();
   if (!radioReady) {
     Serial.println(F("scanner disabled until a valid CC1101 is detected"));
@@ -425,7 +471,7 @@ void setup() {
   if (!setModem(SCAN_MDMCFG4, SCAN_MDMCFG3, SCAN_MDMCFG2, SCAN_DEVIATN)) {
     Serial.println(F("CC1101 ERROR: scan modem setup failed"));
   }
-  Serial.println(F("SCAN running 867.700-869.100 MHz. Press the remote now."));
+  Serial.println(F("ready. send b and stay idle ~20 s, then m and keep pressing"));
 }
 
 void loop() {
@@ -435,14 +481,28 @@ void loop() {
     return;
   }
 
-  if (mode == Mode::Scan) {
-    scanStep();
-    static uint32_t lastTableMs = 0;
-    if (millis() - lastTableMs >= 15000) {
-      lastTableMs = millis();
-      printTable();
+  if (mode == Mode::Baseline || mode == Mode::Measure) {
+    BinStats* target = mode == Mode::Baseline ? baseline : measured;
+    if (!sampleBin(scanIndex, target[scanIndex])) {
+      Serial.println(F("SCAN ERROR: tune failed"));
+      return;
     }
-  } else {
+    scanIndex++;
+    if (scanIndex >= SCAN_BINS) {
+      scanIndex = 0;
+      if (mode == Mode::Baseline) {
+        baselineSweeps++;
+        Serial.printf("baseline sweep %lu done\n",
+                      static_cast<unsigned long>(baselineSweeps));
+      } else {
+        measureSweeps++;
+        Serial.printf("measure sweep %lu done\n",
+                      static_cast<unsigned long>(measureSweeps));
+      }
+    }
+  } else if (mode == Mode::Probe) {
     probeStep();
+  } else {
+    delay(50);
   }
 }

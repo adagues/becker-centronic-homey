@@ -1,14 +1,26 @@
-# Becker CC1101 frequency scanner
+# Becker CC1101 scanner (idle vs press)
 
-Diagnostic firmware for the case we are in: with the published Becker profile
-(868.282806 MHz, 2-FSK) the remote is received at about -37 dBm, `MARCSTATE` is
-`0x0D` (RX) and `FREQEST` is `0`, yet GDO2 produces no data transitions. That
-combination fits a carrier sitting inside the wide 325 kHz filter but off the
-tuned centre, or a modulation that is not 2-FSK.
+Diagnostic firmware for the state we are in: with the published Becker profile
+(868.282806 MHz, 2-FSK) the remote is received strongly, `MARCSTATE` is `0x0D`
+and `FREQEST` is `0`, yet GDO2 carries no data transitions.
+
+## Why version 2 exists
+
+The first scan reported a peak at 868.300-868.350 MHz around -48 dBm, but:
+
+- the same `HIT` lines reappeared on every sweep, which looks like a permanent
+  carrier rather than bursts caused by button presses;
+- twelve channels reported an identical -59 dBm floor, while the idle noise floor
+  measured earlier at 325 kHz bandwidth was about -81 dBm;
+- the peak channel produced `edges=0`, so nothing was modulating there.
+
+A single-pass maximum cannot separate the remote from a permanent neighbour
+signal or from an RSSI reading taken before the AGC settled. This version
+therefore measures every channel twice and reports the difference.
 
 ## Wiring
 
-Unchanged from the capture firmware.
+Unchanged.
 
 | CC1101 | ESP32 |
 |--------|-------|
@@ -29,60 +41,49 @@ pio run -t upload
 pio device monitor -b 115200
 ```
 
-Wi-Fi is not used at all: it caused brownout resets on this board.
+## Procedure
 
-## Serial commands
+| Step | Command | What you do |
+|------|---------|-------------|
+| 1 | `b` | Do **not** touch the remote for about 20 seconds |
+| 2 | `m` | Press the remote continuously for about 30 seconds |
+| 3 | `t` | Send the table |
+| 4 | `p` | Keep pressing while modulation candidates are tried |
 
-One character followed by Enter.
+Each pass prints `baseline sweep N done` / `measure sweep N done` so you know when
+enough data is collected. Three sweeps per pass is plenty.
 
-| Command | Effect |
-|---------|--------|
-| `s` | scan mode (default) |
-| `p` | probe mode on the strongest frequency found |
-| `t` | print the scan table now |
-| `z` | clear statistics |
-
-## Step 1 - locate the carrier
-
-Scan mode sweeps 867.700 to 869.100 MHz in 50 kHz steps with a narrow 101.5 kHz
-filter, so a strong carrier only registers near its real channel.
-
-Press the remote repeatedly for 30 to 60 seconds. Each burst that exceeds
--65 dBm prints immediately:
+## Reading the table
 
 ```text
-HIT f=868.300 MHz rssi=-38 dBm becker=0 edges=54
+BIN f=868.300 idle_mean=-92 idle_max=-90 press_mean=-60 press_max=-47 delta=45 becker=131 edges=268  <== best delta
 ```
 
-A table is printed every 15 seconds:
-
-```text
-BIN f=868.300 MHz max_rssi=-38 dBm becker=0 edges=54  <== strongest
-BEST f=868.300 MHz max_rssi=-38 dBm
-```
-
-Reading it:
-
-- `max_rssi` peaks at the remote's actual transmit frequency.
-- a peak away from 868.283 MHz means our tuned centre was wrong.
+- `delta` is what matters: `press_max` minus `idle_mean`. Only a channel that
+  rises when you press can be the remote.
+- `[carrier already present when idle]` marks channels that are strong even
+  without pressing. Those are neighbours or internal spurs, not the remote.
 - `becker` counts pulses between 250 and 1150 us, the Becker range (half-bit
-  about 414 us, full bit about 828 us). Any non-zero value is a strong lead.
+  about 414 us, full bit about 828 us). A non-zero count on the best-delta
+  channel is the real target.
+
+RSSI is now sampled after a 6 ms settle, ten times per channel, and both the mean
+and the maximum are kept.
 
 ## Step 2 - identify the modulation
 
-Send `p`. The firmware stays on the strongest frequency and cycles candidates,
-4 seconds each, while you keep pressing the remote:
+`p` stays on the best-delta channel and cycles candidates, 4 seconds each:
 
 ```text
-PROBE 2FSK 2.4k bw203 dev25   rssi=-38 dBm becker=0   edges=12  marc=0x0D freqest=0
-PROBE OOK  2.4k bw203         rssi=-38 dBm becker=131 edges=268 marc=0x0D freqest=0
+PROBE 2FSK 2.4k bw203 dev25   max_rssi=-47 becker=0   edges=12  marc=0x0D freqest=0
+PROBE OOK  2.4k bw203         max_rssi=-47 becker=131 edges=268 marc=0x0D freqest=0
 ```
 
-The configuration with a clearly higher `becker` count is the real modulation.
-If OOK wins, this remote is not 2-FSK like the documented CC31/CC51 reference,
-which changes the receive and replay strategy for the whole project.
+The configuration with a clearly higher `becker` count is the real modulation. If
+an OOK entry wins, this remote is not 2-FSK like the documented CC31/CC51
+reference, which changes the receive strategy for the whole project.
 
 ## Scope
 
-Diagnostic only. It does not decode frames and does not transmit. Recovering the
+Diagnostic only: it does not decode frames and never transmits. Recovering the
 KeeLoq key remains out of reach without a device dump.
